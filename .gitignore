@@ -1,0 +1,67 @@
+# Python specific
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.env
+*.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# FastAPI specific
+instance/
+*.db
+*.sqlite3
+
+# Logs
+*.log
+*.out
+*.err
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Test and coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+*.cover
+*.py,cover
+.cache
+pytest_cache/
+nosetests.xml
+coverage.xml
+*.coveragerc
+
+# Deployment
+*.pid
+*.seed
+*.key
+
+# Docker
+*.dockerignore
+docker-compose.override.yml
+
+# Node.js (if applicable)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
