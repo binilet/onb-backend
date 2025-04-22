@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routes import auth,user,game
+from routes import auth,user,game,deposit,withdrawls,creditBalance
 app = FastAPI()
 
 #cors middleware
@@ -17,7 +17,10 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(user.router)
 app.include_router(game.router)
+app.include_router(deposit.router)
+app.include_router(withdrawls.router)
+app.include_router(creditBalance.router)
 
 @app.get("/")
 async def read_root():
-    return {"message": "welcom to my fast api online bingo api"}
+    return {"message": "welcom to hagere online api"}

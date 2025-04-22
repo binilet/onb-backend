@@ -46,7 +46,7 @@ async def update_user_details(
     return user
 
 @router.get("/all_users", response_model=list[UserInDB])
-async def read_all_users(skip: int = 0,limit: int = 10,
+async def read_all_users(skip: int = 0,limit: int = 1000,
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
@@ -59,7 +59,7 @@ async def read_all_users(skip: int = 0,limit: int = 10,
 
 @router.get("/all_users_by_role", response_model=list[UserInDB])
 async def read_all_users_by_role(
-    role:str,skip: int = 0,limit: int = 10,
+    role:str,skip: int = 0,limit: int = 1000,
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):

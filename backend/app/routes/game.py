@@ -24,7 +24,7 @@ async def create_game(
 ):
     if current_user.role != "system":
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    created_game = await create_game_transaction(db.GameTransactions, game)
+    created_game = await create_game_transaction(db.gametransactions, game)
     if not created_game:
         raise HTTPException(status_code=400, detail="Failed to create game transaction")
     return created_game
@@ -39,7 +39,7 @@ async def get_game(
     if current_user.role != "system" or current_user.role != "agent":
         raise HTTPException(status_code=403, detail="Not enough permissions")
     
-    game = await get_game_transaction(db.GameTransactions, game_id)
+    game = await get_game_transaction(db.gametransactions, game_id)
     if not game:
         raise HTTPException(status_code=404, detail="Game transaction not found")
     return game
@@ -53,7 +53,7 @@ async def update_game(
 ):
     if current_user.role != "system":
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    updated_game = await update_game_transaction(db.GameTransactions, game_id, game_update)
+    updated_game = await update_game_transaction(db.gametransactions, game_id, game_update)
     if not updated_game:
         raise HTTPException(status_code=404, detail="Game transaction not found")
     return updated_game
@@ -64,7 +64,7 @@ async def delete_game(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
-    success = await delete_game_transaction(db.GameTransactions, game_id)
+    success = await delete_game_transaction(db.gametransactions, game_id)
     if not success:
         raise HTTPException(status_code=404, detail="Game transaction not found")
 
@@ -73,19 +73,12 @@ async def get_games_by_range(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     skip: int = 0,
-    limit: int = 11,
+    limit: int = 1000,
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
-    print('start_date:', start_date)
-    print('end_date:', end_date)
-    print('skip:', skip)
-    print('limit:', limit)
-
-    print('current_user:', current_user)
-    print(current_user.role)
     if current_user.role != "system":
         raise HTTPException(status_code=403, detail="Not enough permissions")
     
-    games = await get_games_by_date_range(db.GameTransactions, start_date, end_date, skip, limit)
+    games = await get_games_by_date_range(db.gametransactions, start_date, end_date, skip, limit)
     return games
