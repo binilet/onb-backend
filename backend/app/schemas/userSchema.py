@@ -6,12 +6,14 @@ class UserSchema(BaseModel):
     phone: str
     username: str
     role: str = "user"
-    agent_id: str = "system"
-    agent_percent: float = 0.0
-    is_active: bool = True
+    agentId: Optional[str] = None
+    agentPercent: float = 0.0
+    adminId: Optional[str] = None
+    adminPercent: float = 0.0
+    isActive: bool = True
     verified: bool = False
     verification_txt_count: int = 0
-    ban_until: Optional[datetime] = None
+    banUntil: Optional[datetime] = None
     pwd_change_count: int = 0
     pwd_change_date: Optional[datetime] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -27,10 +29,12 @@ class UserUpdate(BaseModel):
     username: Optional[str] = None
     role: Optional[str] = None
     phone: Optional[str] = None
-    agent_id: Optional[str] = None
-    agent_percent: Optional[float] = None
-    is_active: Optional[bool] = None
-    ban_until: Optional[datetime] = None
+    agentId: Optional[str] = None
+    agentPercent: Optional[float] = None
+    adminId: Optional[str] = None
+    adminPercent: Optional[float] = None
+    isActive: Optional[bool] = None
+    banUntil: Optional[datetime] = None
     verified: Optional[bool] = None
 
 

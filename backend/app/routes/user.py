@@ -1,12 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException,Query
+from fastapi.responses import JSONResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from bson import ObjectId
 
 from dependencies.auth import get_current_active_user
 from models.user import UserInDB
 from schemas.userSchema import UserUpdate
-from services.user_service import get_user, update_user, get_users,get_users_by_role
+from services.user_service import get_user, update_user, get_users,get_users_by_role,generate_referral_code
 from core.db import get_db
+
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -71,3 +73,8 @@ async def read_all_users_by_role(
 
     return users
     
+@router.get("/generate-referral")
+def generate_referral(phone:str=Query(...)):
+    code = generate_referral_code(phone)
+    referral_url = f"https://hagere-online.com/signup?ref={code}"
+    return JSONResponse({"referralUrl":referral_url})

@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorClient
 from typing import List,Optional
 from datetime import datetime
 from schemas.gameTransactionSchema import GameTransactionInDB, GameTransactionCreate, GameTransactionUpdate
+from schemas.winningDistributionSchema import WinningDistributionInDB
 from services.game_service import (
     create_game_transaction,
     get_game_transaction,
@@ -10,8 +11,12 @@ from services.game_service import (
     delete_game_transaction,
     get_games_by_date_range,
 )
+
+from core.winningDistribution import (
+    calculate_winning_distribution
+)
 from dependencies.auth import get_current_active_user
-from core.db import get_db
+from core.db import get_db,get_client
 from models.user import UserInDB
 
 router = APIRouter(prefix="/api/games", tags=["games"])
@@ -82,3 +87,16 @@ async def get_games_by_range(
     
     games = await get_games_by_date_range(db.gametransactions, start_date, end_date, skip, limit)
     return games
+
+
+@router.get("/distribute_winnings", response_model=List[WinningDistributionInDB])
+async def game_distribution(
+    game_id: Optional[str] = None,
+    #current_user: UserInDB = Depends(get_current_active_user),
+    db: AsyncIOMotorDatabase = Depends(get_client)
+):
+    #if current_user.role != "system":
+     #   raise HTTPException(status_code=403, detail="Not enough permissions")
+    
+    distributed_data = await calculate_winning_distribution(db)
+    return distributed_data

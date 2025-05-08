@@ -44,11 +44,11 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncIOMot
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    if not user.is_active:
+    if not user.isActive:
         raise HTTPException(status_code=400, detail="Inactive user")
     
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(data={"phone":user.phone,"role":user.role,"agentId":user.agent_id},expires_delta=access_token_expires)
+    access_token = create_access_token(data={"phone":user.phone,"role":user.role,"agentId":user.agentId},expires_delta=access_token_expires)
     return Token(access_token=access_token, token_type="bearer")
 
 @router.post("/request-verification/{phone}")

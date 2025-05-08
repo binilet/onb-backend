@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional,List
 
 from motor.motor_asyncio import AsyncIOMotorCollection
 from bson import ObjectId
@@ -7,6 +7,7 @@ from bson import ObjectId
 from models.user import UserInDB
 from schemas.userSchema import UserSchema
 from core.security import get_password_hash, verify_password
+import base64
 
 async def get_user(users_collection: AsyncIOMotorCollection, user_id: str) -> Optional[UserInDB]:
     user = await users_collection.find_one({"_id": ObjectId(user_id)})
@@ -54,7 +55,7 @@ async def get_users(users_collection: AsyncIOMotorCollection,current_user: UserI
     if(current_user.role == "system"):
         users_cursor = users_collection.find().skip(skip).limit(limit)
     elif(current_user.role == "agent"):
-        users_cursor = users_collection.find({"agent_id": current_user.phone}).skip(skip).limit(limit)
+        users_cursor = users_collection.find({"agentId": current_user.phone}).skip(skip).limit(limit)
     users = await users_cursor.to_list(length=limit)
     return [UserInDB(**user) for user in users] if users else []
 
@@ -63,7 +64,7 @@ async def get_users_by_role(users_collection: AsyncIOMotorCollection, current_us
     if(current_user.role == "system"):
         users_cursor = users_collection.find({"role":role}).skip(skip).limit(limit)
     elif(current_user.role == "agent"):
-        users_cursor = users_collection.find({"agent_id": current_user.phone,"role":"user"}).skip(skip).limit(limit)
+        users_cursor = users_collection.find({"agentId": current_user.phone,"role":"user"}).skip(skip).limit(limit)
     users = await users_cursor.to_list(length=limit)
     return [UserInDB(**user) for user in users] if users else []
 
@@ -85,3 +86,25 @@ async def ban_user(
         user_id,
         {"ban_until": datetime.now(timezone.utc) + ban_duration}
     )
+
+async def get_users_by_phones(
+    user_collection: AsyncIOMotorCollection, 
+    phone_numbers: List[str]
+) -> List[UserInDB]:
+    """Fetch all users whose phone numbers are in the given list."""
+    
+    # Query using $in to match any phone in the list
+    cursor = user_collection.find({"phone": {"$in": phone_numbers}})
+    
+    # Convert results to UserInDB objects (if using Pydantic)
+    users = [UserInDB(**user) async for user in cursor]
+    
+    return users
+
+def generate_referral_code(phone:str)->str:
+    try:
+        salted = f"X9{phone[::-1]}Z3"  # simple obfuscation
+        encoded = base64.urlsafe_b64encode(salted.encode()).decode()
+        return encoded
+    except Exception as e:
+        print(e)

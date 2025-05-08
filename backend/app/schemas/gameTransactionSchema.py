@@ -17,6 +17,7 @@ class GameTransactionBase(BaseModel):
     winner_board_id: Optional[str] = None
     players: List[str]
     game_completed: bool
+    game_distributed: Optional[bool] = False
     note: Optional[str] = None
 
 class GameTransactionCreate(GameTransactionBase):
@@ -36,6 +37,7 @@ class GameTransactionUpdate(BaseModel):
     winner_board_id: Optional[str] = None
     players: Optional[List[str]] = None
     game_completed: Optional[bool] = None
+    game_distributed: Optional[bool] = False
     note: Optional[str] = None
 
 class GameTransactionInDB(GameTransactionBase):

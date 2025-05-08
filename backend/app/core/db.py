@@ -6,3 +6,6 @@ db = client[settings.MONGODB_NAME]
 
 def get_db():
     return db
+
+def get_client() -> AsyncIOMotorClient:
+    return client

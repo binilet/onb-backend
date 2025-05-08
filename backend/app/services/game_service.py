@@ -50,3 +50,22 @@ async def get_games_by_date_range(
     }).skip(skip).limit(limit)
     games = await cursor.to_list(length=limit)
     return [GameTransactionInDB(**game) for game in games]
+
+async def get_undistributed_games(games_collection:AsyncIOMotorCollection)->List[GameTransactionInDB]:
+    cursor = games_collection.find({
+        "is_void": False,
+        "game_completed": True,
+        "$or": [
+            { "game_distributed": False },
+            { "game_distributed": { "$exists": False } }
+        ]
+    })
+    games = await cursor.to_list()  # Adjust the length as needed
+    return [GameTransactionInDB(**game) for game in games]
+
+async def update_game_transaction_distributed_status(
+    games_collection: AsyncIOMotorCollection, game_id: str, distrbuted: bool
+) -> Optional[GameTransactionInDB]:
+    await games_collection.update_one({"game_id": game_id}, {"$set": {"game_distributed": distrbuted}})
+    updated_game = await games_collection.find_one({"game_id": game_id})
+    return GameTransactionInDB(**updated_game) if updated_game else None
