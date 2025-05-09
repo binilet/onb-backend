@@ -12,7 +12,7 @@ from core.db import get_db
 
 
 async def calculate_winning_distribution(
-    db_client: AsyncIOMotorClient, is_production: bool = False
+    db_client: AsyncIOMotorClient, game_id:str= None,is_production: bool = False
 ) -> List[WinningDistributionInDB]:
     """
     Calculate and store winning distributions for undistributed games atomically.
@@ -22,7 +22,16 @@ async def calculate_winning_distribution(
     distribution_collection = db_client[db_name].WinningDistributions
     game_collection = db_client[db_name].gametransactions
 
-    undistributed_games = await get_undistributed_games(game_collection)
+    if(game_id):
+        distributions = await distribution_collection.find({"gameId": game_id}).to_list(length=None)
+        if distributions:
+            print(f"distributions already found for game {game_id}")
+            return distributions
+
+    undistributed_games = await get_undistributed_games(game_collection,game_id)
+    if not undistributed_games or len(undistributed_games) == 0:
+         raise Exception("No undistributed games found.")
+    
     print(f"undistributed games count: {len(undistributed_games)}")
     all_inserted_distributions = []
 
@@ -120,16 +129,27 @@ async def distribute_winning(game: GameTransactionInDB, db) -> List[WinningDistr
     #     }
     # )
 
+    falsy_values = {None, '', '0', 0, 'null', 'None','system'}
+    
+    # distinct_agent_admin_pairs = list({
+    # (
+    #     'system' if  player.agentId in falsy_values and player.adminId in falsy_values else player.agentId,
+    #     'system' if  player.agentId in falsy_values and player.adminId in falsy_values else player.adminId,
+    # )
+    # for player in game_players_details
+    # })
+
     distinct_agent_admin_pairs = list({
     (
-        'system' if not player.agentId and not player.adminId else player.agentId,
-        'system' if not player.agentId and not player.adminId else player.adminId,
+        player.agentId if player.agentId not in falsy_values else 'system',
+        player.adminId if player.adminId not in falsy_values else 'system',
     )
     for player in game_players_details
     })
 
+
     print(f"distinct agent admin pairs count: {len(distinct_agent_admin_pairs)} for game {game.game_id}")
-    #print(game_players_details)
+    print(distinct_agent_admin_pairs)
     distributions: List[WinningDistributionInDB] = []
     current_time = game.date
 
@@ -148,12 +168,8 @@ async def distribute_winning(game: GameTransactionInDB, db) -> List[WinningDistr
 
     for (agent_phone, admin_phone) in distinct_agent_admin_pairs:
         # Filter players in the game that are under this specific agent AND this specific admin
-        players_under_this_agent_admin_pair = [
-            p_detail
-            for p_detail in game_players_details
-            if p_detail.agentId == agent_phone and p_detail.adminId == admin_phone
-        ]
-        
+        players_under_this_agent_admin_pair = get_players_under_agent_admin_pair(agent_phone, admin_phone, game_players_details, falsy_values)
+
         count_of_players_for_this_pair = len(players_under_this_agent_admin_pair)
 
         if count_of_players_for_this_pair == 0:
@@ -176,13 +192,15 @@ async def distribute_winning(game: GameTransactionInDB, db) -> List[WinningDistr
                 cached_users[phone] = user
             return user
 
-        agent_obj: Optional[UserInDB] = await get_user_with_cache(db, agent_phone)
-        if agent_obj:
-            agent_percent = 0 if agent_phone == 'system' else agent_obj.agentPercent
-
-        admin_obj: Optional[UserInDB] = await get_user_with_cache(db, admin_phone)
-        if admin_obj:
-            admin_percent = 0 if admin_phone == 'system' else admin_obj.adminPercent
+        if not agent_phone == 'system':
+            agent_obj: Optional[UserInDB] = await get_user_with_cache(db, agent_phone)
+            if agent_obj:
+                agent_percent = agent_obj.agentPercent
+        
+        if not admin_phone == 'system':
+            admin_obj: Optional[UserInDB] = await get_user_with_cache(db, admin_phone)
+            if admin_obj:
+                admin_percent = admin_obj.adminPercent
 
 
         agent_commission_rate = agent_percent / 100.0
@@ -211,7 +229,7 @@ async def distribute_winning(game: GameTransactionInDB, db) -> List[WinningDistr
                 phone=admin_phone,
                 owner=agent_phone,
                 role="admin",
-                note=f"Admin commission from agent {agent_phone} for game {game.game_id}."
+                note=f"Admin commission from agent {agent_phone}."
             )
             distributions.append(admin_dist_record)
 
@@ -225,7 +243,7 @@ async def distribute_winning(game: GameTransactionInDB, db) -> List[WinningDistr
                 phone=agent_phone,
                 owner="system",
                 role="agent",
-                note=f"Agent commission (net) for game {game.game_id} (admin {admin_phone} took {admin_percent}%)."
+                note=f"Agent commission (net) - (admin {admin_phone} took {admin_percent}%)."
             )
             distributions.append(agent_dist_record)
 
@@ -239,7 +257,7 @@ async def distribute_winning(game: GameTransactionInDB, db) -> List[WinningDistr
                 phone="system",
                 owner="system",
                 role="system",
-                note=f"system commission (net) for game {game.game_id} (agent {agent_phone} took {agent_percent}%)."
+                note=f"system commission (net) - (agent {agent_phone} took {agent_percent}%)."
             )
             distributions.append(system_dist_record)
         
@@ -247,6 +265,35 @@ async def distribute_winning(game: GameTransactionInDB, db) -> List[WinningDistr
     return distributions
 
 
+def get_players_under_agent_admin_pair(agent_phone, admin_phone, game_players_details, falsy_values):
+    """
+    Returns a list of players matching the given agent/admin pair.
+    'system' is used to represent missing (falsy) agentId or adminId.
+    """
+    if agent_phone == 'system' and admin_phone == 'system':
+        return [
+            p_detail 
+            for p_detail in game_players_details
+            if p_detail.agentId in falsy_values and p_detail.adminId in falsy_values
+        ]
+    elif agent_phone == 'system':
+        return [
+            p_detail 
+            for p_detail in game_players_details
+            if p_detail.agentId in falsy_values and p_detail.adminId == admin_phone
+        ]
+    elif admin_phone == 'system':
+        return [
+            p_detail 
+            for p_detail in game_players_details
+            if p_detail.agentId == agent_phone and p_detail.adminId in falsy_values
+        ]
+    else:
+        return [
+            p_detail
+            for p_detail in game_players_details
+            if p_detail.agentId == agent_phone and p_detail.adminId == admin_phone
+        ]
 
 # async def distribute_winning(game:GameTransactionInDB,db: AsyncIOMotorDatabase = Depends(get_db)) -> List[WinningDistributionInDB]:
 #     """

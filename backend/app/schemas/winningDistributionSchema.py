@@ -16,6 +16,9 @@ class WinningDistributionInDB(BaseModel):
     owner:str
     role:str
     deposited:bool
+    approved:bool=False
+    approvedBy: Optional[str] = None
+    approvedDate: Optional[datetime] = None
     note: Optional[str] = ""
 
     class Config:

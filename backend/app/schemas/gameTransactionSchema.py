@@ -14,7 +14,7 @@ class GameTransactionBase(BaseModel):
     winners: Optional[List[str]] = None
     is_void: bool
     number_of_calls: Optional[int] = None
-    winner_board_id: Optional[str] = None
+    winner_board_id: Optional[float] = None
     players: List[str]
     game_completed: bool
     game_distributed: Optional[bool] = False
@@ -34,7 +34,7 @@ class GameTransactionUpdate(BaseModel):
     winners: Optional[List[str]] = None
     is_void: Optional[bool] = None
     number_of_calls: Optional[int] = None
-    winner_board_id: Optional[str] = None
+    winner_board_id: Optional[float] = None
     players: Optional[List[str]] = None
     game_completed: Optional[bool] = None
     game_distributed: Optional[bool] = False

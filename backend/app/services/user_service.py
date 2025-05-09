@@ -26,7 +26,7 @@ async def authenticate_user(users_collection: AsyncIOMotorCollection, phone:str,
     user = await get_user_by_phone(users_collection,phone)
     if not user:
         return None
-    if(user.role != "system" and user.role != "agent"):
+    if(user.role != "system" and user.role != "agent" and user.role != "admin"):
         return None
     if not verify_password(password,user.password):
         return None
@@ -53,18 +53,21 @@ async def update_user(users_collection: AsyncIOMotorCollection, user_id:str,upda
 async def get_users(users_collection: AsyncIOMotorCollection,current_user: UserInDB, skip: int = 0,limit: int = 10) -> list[UserInDB]:
     users_cursor = None
     if(current_user.role == "system"):
-        users_cursor = users_collection.find().skip(skip).limit(limit)
+        users_cursor = users_collection.find()#.skip(skip).limit(limit)
     elif(current_user.role == "agent"):
-        users_cursor = users_collection.find({"agentId": current_user.phone}).skip(skip).limit(limit)
-    users = await users_cursor.to_list(length=limit)
+        users_cursor = users_collection.find({"agentId": current_user.phone})#.skip(skip).limit(limit)
+    elif(current_user.role == "admin"):
+        users_cursor = users_collection.find({"adminId": current_user.phone,"role":"user"})#.skip(skip).limit(limit)
+
+    users = await users_cursor.to_list()
     return [UserInDB(**user) for user in users] if users else []
 
 async def get_users_by_role(users_collection: AsyncIOMotorCollection, current_user: UserInDB,role:str, skip: int = 0,limit = 10) -> list[UserInDB]:
     users_cursor = None
     if(current_user.role == "system"):
-        users_cursor = users_collection.find({"role":role}).skip(skip).limit(limit)
+        users_cursor = users_collection.find({"role":role})#.skip(skip).limit(limit)
     elif(current_user.role == "agent"):
-        users_cursor = users_collection.find({"agentId": current_user.phone,"role":"user"}).skip(skip).limit(limit)
+        users_cursor = users_collection.find({"agentId": current_user.phone})#.skip(skip).limit(limit)
     users = await users_cursor.to_list(length=limit)
     return [UserInDB(**user) for user in users] if users else []
 

@@ -3,6 +3,7 @@ from motor.motor_asyncio import AsyncIOMotorCollection
 from bson import ObjectId
 from datetime import datetime,timedelta
 from schemas.gameTransactionSchema import GameTransactionCreate, GameTransactionUpdate, GameTransactionInDB
+from models.user import UserInDB
 
 async def create_game_transaction(
     games_collection: AsyncIOMotorCollection, game: GameTransactionCreate
@@ -34,6 +35,7 @@ async def delete_game_transaction(
 
 async def get_games_by_date_range(
     games_collection: AsyncIOMotorCollection,
+    current_user: UserInDB,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     skip: int = 0,
@@ -42,24 +44,36 @@ async def get_games_by_date_range(
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     default_end = today + timedelta(days=1) - timedelta(seconds=1)  # 23:59:59
 
-    query_start_date = start_date if start_date is not None else today
-    query_end_date = end_date if end_date is not None else default_end
+    query_start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0) if start_date is not None else today
+    query_end_date = end_date.replace(hour=23, minute=59, second=58, microsecond=0) if end_date is not None else default_end
 
     cursor = games_collection.find({
         "date": {"$gte": query_start_date, "$lte": query_end_date}
-    }).skip(skip).limit(limit)
+    })#.skip(skip).limit(limit)
     games = await cursor.to_list(length=limit)
     return [GameTransactionInDB(**game) for game in games]
 
-async def get_undistributed_games(games_collection:AsyncIOMotorCollection)->List[GameTransactionInDB]:
-    cursor = games_collection.find({
-        "is_void": False,
-        "game_completed": True,
-        "$or": [
-            { "game_distributed": False },
-            { "game_distributed": { "$exists": False } }
-        ]
-    })
+async def get_undistributed_games(games_collection:AsyncIOMotorCollection,game_id:str= None)->List[GameTransactionInDB]:
+    if game_id:
+        cursor = games_collection.find({
+            "game_id": game_id,
+            "is_void": False,
+            "game_completed": True,
+            "$or": [
+                { "game_distributed": False },
+                { "game_distributed": { "$exists": False } }
+            ]
+        })
+    else:
+        cursor = games_collection.find({
+            "is_void": False,
+            "game_completed": True,
+            "$or": [
+                { "game_distributed": False },
+                { "game_distributed": { "$exists": False } }
+            ]
+        })
+        
     games = await cursor.to_list()  # Adjust the length as needed
     return [GameTransactionInDB(**game) for game in games]
 

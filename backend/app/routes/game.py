@@ -82,21 +82,25 @@ async def get_games_by_range(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
-    if current_user.role != "system":
+    if current_user.role == "user":
         raise HTTPException(status_code=403, detail="Not enough permissions")
     
-    games = await get_games_by_date_range(db.gametransactions, start_date, end_date, skip, limit)
+    games = await get_games_by_date_range(db.gametransactions,current_user, start_date, end_date, skip, limit)
     return games
 
 
 @router.get("/distribute_winnings", response_model=List[WinningDistributionInDB])
 async def game_distribution(
     game_id: Optional[str] = None,
-    #current_user: UserInDB = Depends(get_current_active_user),
+    redistribute: Optional[bool] = False,
+    current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_client)
 ):
-    #if current_user.role != "system":
-     #   raise HTTPException(status_code=403, detail="Not enough permissions")
+    try:
+        if current_user.role != "system":
+            raise HTTPException(status_code=403, detail="Not enough permissions")
     
-    distributed_data = await calculate_winning_distribution(db)
-    return distributed_data
+        distributed_data = await calculate_winning_distribution(db,game_id)
+        return distributed_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Internal server error: {}".format(str(e)))
