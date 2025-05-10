@@ -168,3 +168,14 @@ async def get_distribution_summary_by_phone(
         "monthToDate": summaries[2]["amount"],
         "yearToDate": summaries[3]["amount"]
     }
+async def approvDistributions(collection: AsyncIOMotorCollection,current_user: UserInDB, game_id:str):
+    print(game_id)
+    result = await collection.update_many(
+        {"gameId": game_id},
+        {
+            "$set": 
+                {"approved": True,"approvedBy": current_user.phone,"approvedDate": datetime.now()}
+        }
+    )
+    print (f"Updated {result.modified_count} documents")
+    return result.modified_count > 0

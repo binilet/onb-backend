@@ -12,7 +12,7 @@ from core.db import get_db
 
 
 async def calculate_winning_distribution(
-    db_client: AsyncIOMotorClient, game_id:str= None,is_production: bool = False
+    db_client: AsyncIOMotorClient, game_id:str= None,redistribute: Optional[bool] = False,is_production: bool = False
 ) -> List[WinningDistributionInDB]:
     """
     Calculate and store winning distributions for undistributed games atomically.
@@ -22,14 +22,28 @@ async def calculate_winning_distribution(
     distribution_collection = db_client[db_name].WinningDistributions
     game_collection = db_client[db_name].gametransactions
 
-    if(game_id):
+    if(not redistribute and game_id):
         distributions = await distribution_collection.find({"gameId": game_id}).to_list(length=None)
         if distributions:
             print(f"distributions already found for game {game_id}")
             return distributions
+        
+    undistributed_games =[]
 
-    undistributed_games = await get_undistributed_games(game_collection,game_id)
-    if not undistributed_games or len(undistributed_games) == 0:
+    if(game_id and redistribute):
+        isDeposited = await distribution_collection.find_one({"gameId": game_id,"deposited":True})
+        if isDeposited:
+            raise Exception("Distribution already deposited.")
+        else:
+            await distribution_collection.delete_many({"gameId": game_id})
+        
+        game = await game_collection.find_one({"game_id": game_id})
+        if not game:
+            raise Exception("Game not found.")
+        undistributed_games.append(game)
+    else:
+        undistributed_games = await get_undistributed_games(game_collection,game_id)
+        if not undistributed_games or len(undistributed_games) == 0:
          raise Exception("No undistributed games found.")
     
     print(f"undistributed games count: {len(undistributed_games)}")

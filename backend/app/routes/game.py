@@ -13,7 +13,7 @@ from services.game_service import (
 )
 from services.winningDistribution_service import (
     get_winning_distributions_by_date_range,
-    get_distribution_summary_by_phone
+    get_distribution_summary_by_phone,approvDistributions
 )
 from core.winningDistribution import (
     calculate_winning_distribution
@@ -103,7 +103,7 @@ async def game_distribution(
         if current_user.role != "system":
             raise HTTPException(status_code=403, detail="Not enough permissions")
     
-        distributed_data = await calculate_winning_distribution(db,game_id)
+        distributed_data = await calculate_winning_distribution(db,game_id,redistribute)
         return distributed_data
     except Exception as e:
         raise HTTPException(status_code=500, detail="Internal server error: {}".format(str(e)))
@@ -146,5 +146,23 @@ async def get_winning_distribution(
             current_user
         )
         return distributions
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Internal server error: {}".format(str(e)))
+
+@router.put("/update_distribution/{game_id}", response_model=bool)
+async def update_distribution_status(
+    game_id: str,
+    current_user: UserInDB = Depends(get_current_active_user),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    try:
+        if current_user.role != "system":
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+    
+        return await approvDistributions(
+            db.WinningDistributions,
+            current_user,
+            game_id
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail="Internal server error: {}".format(str(e)))
