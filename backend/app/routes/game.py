@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorClient
-from typing import List,Optional
+from typing import List,Optional,Dict
 from datetime import datetime
 from schemas.gameTransactionSchema import GameTransactionInDB, GameTransactionCreate, GameTransactionUpdate
 from schemas.winningDistributionSchema import WinningDistributionInDB
@@ -11,7 +11,10 @@ from services.game_service import (
     delete_game_transaction,
     get_games_by_date_range,
 )
-
+from services.winningDistribution_service import (
+    get_winning_distributions_by_date_range,
+    get_distribution_summary_by_phone
+)
 from core.winningDistribution import (
     calculate_winning_distribution
 )
@@ -82,10 +85,10 @@ async def get_games_by_range(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
-    if current_user.role == "user":
+    if current_user.role != "admin" and current_user.role != "agent" and current_user.role != "system":
         raise HTTPException(status_code=403, detail="Not enough permissions")
     
-    games = await get_games_by_date_range(db.gametransactions,current_user, start_date, end_date, skip, limit)
+    games = await get_games_by_date_range(db.gametransactions,db.users,current_user, start_date, end_date, skip, limit)
     return games
 
 
@@ -102,5 +105,46 @@ async def game_distribution(
     
         distributed_data = await calculate_winning_distribution(db,game_id)
         return distributed_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Internal server error: {}".format(str(e)))
+    
+
+@router.get("/winning_distribution", response_model=List[WinningDistributionInDB])
+async def get_winning_distribution(
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    phone: Optional[str] = None,
+    current_user: UserInDB = Depends(get_current_active_user),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    try:
+        if current_user.role != "admin" and current_user.role != "agent" and current_user.role != "system":
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+    
+        distributions = await get_winning_distributions_by_date_range(
+            db.WinningDistributions,
+            current_user,
+            start_date,
+            end_date,
+            phone
+        )
+        return distributions
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Internal server error: {}".format(str(e)))
+
+@router.get("/winning_summary", response_model=Dict[str, float])
+async def get_winning_distribution(
+    current_user: UserInDB = Depends(get_current_active_user),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    try:
+        if current_user.role != "admin" and current_user.role != "agent" and current_user.role != "system":
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+    
+        distributions = await get_distribution_summary_by_phone(
+            db.WinningDistributions,
+            current_user
+        )
+        return distributions
     except Exception as e:
         raise HTTPException(status_code=500, detail="Internal server error: {}".format(str(e)))

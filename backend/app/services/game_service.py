@@ -35,23 +35,53 @@ async def delete_game_transaction(
 
 async def get_games_by_date_range(
     games_collection: AsyncIOMotorCollection,
+    users_collection: AsyncIOMotorCollection,
     current_user: UserInDB,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     skip: int = 0,
     limit: int = 10
 ) -> List[GameTransactionInDB]:
+
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    default_end = today + timedelta(days=1) - timedelta(seconds=1)  # 23:59:59
+    default_end = today + timedelta(days=1) - timedelta(seconds=1)
 
-    query_start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0) if start_date is not None else today
-    query_end_date = end_date.replace(hour=23, minute=59, second=58, microsecond=0) if end_date is not None else default_end
+    query_start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0) if start_date else today
+    query_end_date = end_date.replace(hour=23, minute=59, second=58, microsecond=0) if end_date else default_end
 
-    cursor = games_collection.find({
-        "date": {"$gte": query_start_date, "$lte": query_end_date}
-    })#.skip(skip).limit(limit)
-    games = await cursor.to_list(length=limit)
-    return [GameTransactionInDB(**game) for game in games]
+    query = {
+        "date": {
+            "$gte": query_start_date,
+            "$lte": query_end_date
+        }
+    }
+    print(f'role is {current_user.role}')
+    # Collect owned user phone numbers
+    user_phones = None
+    if current_user.role == "admin":
+        user_cursor = users_collection.find({"adminId": current_user.phone}, {"phone": 1})
+        user_phones = [user["phone"] async for user in user_cursor]
+        query["players"] = {"$in": user_phones}
+    elif current_user.role == "agent":
+        user_cursor = users_collection.find({"agentId": current_user.phone}, {"phone": 1})
+        user_phones = [user["phone"] async for user in user_cursor]
+        query["players"] = {"$in": user_phones}
+
+    # Query games
+    cursor = games_collection.find(query)#.skip(skip).limit(limit)
+    raw_games = await cursor.to_list(length=limit)
+
+    filtered_games = []
+    for game in raw_games:
+        if user_phones:
+            # Filter only players owned by current user
+            game["players"] = [p for p in game["players"] if p in user_phones]
+            # Optionally filter winners too, if needed
+            if "winners" in game and game["winners"]:
+                game["winners"] = [w for w in game["winners"] if w in user_phones]
+        filtered_games.append(GameTransactionInDB(**game))
+
+    return filtered_games
 
 async def get_undistributed_games(games_collection:AsyncIOMotorCollection,game_id:str= None)->List[GameTransactionInDB]:
     if game_id:
