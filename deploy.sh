@@ -12,7 +12,7 @@
 #run the above script with pm2 with the following command
 #pm2 start ./start-fastapi.sh --name fastapi-admin
 
-#testing api using uvicorn
+#testing api using uvicorn [navigate to the app directory]
 #uvicorn main:app --reload --host 0.0.0.0 --port 8001
 
 #copy folder and files to vps

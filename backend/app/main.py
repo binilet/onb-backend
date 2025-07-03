@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routes import auth,user,game,deposit,withdrawls,creditBalance
+from routes import auth,user,game,deposit,withdrawls,creditBalance,addisPayDeposit
 app = FastAPI()
 
 #cors middleware
@@ -20,6 +20,7 @@ app.include_router(game.router)
 app.include_router(deposit.router)
 app.include_router(withdrawls.router)
 app.include_router(creditBalance.router)
+app.include_router(addisPayDeposit.router)
 
 @app.get("/")
 async def read_root():
