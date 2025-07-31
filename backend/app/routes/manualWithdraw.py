@@ -38,6 +38,7 @@ async def approve_withdrawl(
     current_user: UserInDB = Depends(get_current_active_user),
     client: AsyncIOMotorClient = Depends(get_client),
      ):
+    print('starting withdrawal request approval ...')
     if current_user.role != "system":
         raise HTTPException(status_code=403, detail="Not enough permissions")
     

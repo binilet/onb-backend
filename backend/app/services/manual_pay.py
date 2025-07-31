@@ -315,11 +315,11 @@ async def approve_manual_withdraw_request(
                 "phone": phone,
                 "date": datetime.now(),
                 "amount": amount,
-                "type": "withdraw",
+                "type": "withdrawal",
                 "message": "Manual withdraw approved",
                 "isdebit": False,
                 "reference": str(withdrawId),
-                "remark": "Manual Request approval",
+                "remark": "Manual Withdrawl Request approval",
                 "transaction_ref": reference,
                 "game_id": None
             }
