@@ -67,7 +67,12 @@ async def get_users_by_role(users_collection: AsyncIOMotorCollection, current_us
     if(current_user.role == "system"):
         users_cursor = users_collection.find({"role":role})#.skip(skip).limit(limit)
     elif(current_user.role == "agent"):
-        users_cursor = users_collection.find({"agentId": current_user.phone})#.skip(skip).limit(limit)
+        users_cursor = users_collection.find({"agentId": current_user.phone,"role":role})#.skip(skip).limit(limit)
+    elif(current_user.role == "admin"):
+        users_cursor = users_collection.find({"adminId": current_user.phone,"role":role})
+    
+    if not users_cursor:
+        return []
     users = await users_cursor.to_list(length=limit)
     return [UserInDB(**user) for user in users] if users else []
 
