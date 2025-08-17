@@ -4,7 +4,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from bson import ObjectId
 
 from dependencies.auth import get_current_active_user
-from models.user import UserInDB
+from models.user import UserInDB,UserWithBalance
 from schemas.userSchema import UserUpdate
 from services.user_service import get_user, update_user, get_users,get_users_by_role,generate_referral_code
 from core.db import get_db
@@ -59,7 +59,7 @@ async def read_all_users(skip: int = 0,limit: int = 1000,
     users = await get_users(db.users,current_user, skip=skip, limit=limit)
     return users
 
-@router.get("/all_users_by_role", response_model=list[UserInDB])
+@router.get("/all_users_by_role", response_model=list[UserWithBalance])
 async def read_all_users_by_role(
     role:str,skip: int = 0,limit: int = 1000,
     current_user: UserInDB = Depends(get_current_active_user),
@@ -69,7 +69,7 @@ async def read_all_users_by_role(
     if current_user.role == "user":
         raise HTTPException(status_code=403, detail="Not enough permissions")
     
-    users = await get_users_by_role(db.users,current_user,role=role, skip=skip, limit=limit)
+    users = await get_users_by_role(db.users,db.creditbalances,current_user,role=role, skip=skip, limit=limit)
 
     return users
     

@@ -18,6 +18,15 @@ async def get_credit_balances_by_date_range(
 
     cursor = balances_collection.find({
         "created_at": {"$gte": query_start_date, "$lte": query_end_date}
-    }).skip(skip).limit(limit)
+    })#.skip(skip).limit(limit)
     balances = await cursor.to_list(length=limit)
     return [CreditBalanceInDB(**balance) for balance in balances]
+
+async def get_credit_balances_by_phone(
+    balances_collection: AsyncIOMotorCollection,
+    phone: str
+) -> CreditBalanceInDB:
+    balance = await balances_collection.find_one({"phone": phone})
+    if balance is None:
+        return None
+    return CreditBalanceInDB(**balance)

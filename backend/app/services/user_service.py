@@ -4,7 +4,7 @@ from typing import Optional,List
 from motor.motor_asyncio import AsyncIOMotorCollection
 from bson import ObjectId
 
-from models.user import UserInDB
+from models.user import UserInDB,UserWithBalance
 from schemas.userSchema import UserSchema
 from core.security import get_password_hash, verify_password
 import base64
@@ -59,23 +59,50 @@ async def get_users(users_collection: AsyncIOMotorCollection,current_user: UserI
     elif(current_user.role == "admin"):
         users_cursor = users_collection.find({"adminId": current_user.phone,"role":"user"})#.skip(skip).limit(limit)
 
+
     users = await users_cursor.to_list()
     return [UserInDB(**user) for user in users] if users else []
 
-async def get_users_by_role(users_collection: AsyncIOMotorCollection, current_user: UserInDB,role:str, skip: int = 0,limit = 10) -> list[UserInDB]:
-    users_cursor = None
-    if(current_user.role == "system"):
-        users_cursor = users_collection.find({"role":role})#.skip(skip).limit(limit)
-    elif(current_user.role == "agent"):
-        users_cursor = users_collection.find({"agentId": current_user.phone,"role":role})#.skip(skip).limit(limit)
-    elif(current_user.role == "admin"):
-        users_cursor = users_collection.find({"adminId": current_user.phone,"role":role})
-    
-    if not users_cursor:
+async def get_users_by_role(users_collection: AsyncIOMotorCollection,credit_collection: AsyncIOMotorCollection, current_user: UserInDB,role:str, skip: int = 0,limit = 10) -> list[UserWithBalance]:
+# Determine filter based on role
+    if current_user.role == "system":
+        query = {"role": role}
+    elif current_user.role == "agent":
+        query = {"agentId": current_user.phone, "role": role}
+    elif current_user.role == "admin":
+        query = {"adminId": current_user.phone, "role": role}
+    else:
         return []
-    users = await users_cursor.to_list(length=limit)
-    return [UserInDB(**user) for user in users] if users else []
+    
+     # Fetch users
+    #users = await users_collection.find(query).skip(skip).limit(limit).to_list(length=None)
+    users = await users_collection.find(query).to_list(length=None)
+    if not users:
+        return []
+    
+    user_phones = [user["phone"] for user in users]
 
+    credit_balances = await credit_collection.find({"phone": {"$in": user_phones}}).to_list(length=None)
+
+    credit_map = {
+        str(cb["phone"]): {
+            "current_balance": cb.get("current_balance", 0),
+            "previous_balance": cb.get("previous_balance", 0)
+        }
+        for cb in credit_balances
+    }
+
+    # Attach credit balances
+    for user in users:
+        user_phone_str = str(user["phone"])
+        balances = credit_map.get(user_phone_str, {"current_balance": 0, "previous_balance": 0})
+        user["current_balance"] = balances["current_balance"]
+        user["previous_balance"] = balances["previous_balance"]
+    
+    # Return Pydantic models
+    users_to_return = [UserWithBalance(**user) for user in users]
+    print(users_to_return)
+    return users_to_return
 
 async def increment_verification_count(users_collection: AsyncIOMotorCollection, user_id: str) -> Optional[UserInDB]:
     return await update_user(

@@ -17,4 +17,14 @@ class UserInDB(UserSchema):
         exclude = {"password"}  # Specify the fields to exclude
 
 
+class UserWithBalance(UserInDB):
+    current_balance: float = 0.0
+    previous_balance: float = 0.0
+
+    class config:
+        populate_by_name = True
+        arbitrary_types_allowed = True
+        exclude = {"password"}
+
+
 
