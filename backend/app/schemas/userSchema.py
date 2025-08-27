@@ -16,7 +16,7 @@ class UserSchema(BaseModel):
     banUntil: Optional[datetime] = None
     pwd_change_count: int = 0
     pwd_change_date: Optional[datetime] = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    createdAt: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     password: str
 
     @field_validator('password')

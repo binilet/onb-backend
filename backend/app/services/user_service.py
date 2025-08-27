@@ -101,7 +101,7 @@ async def get_users_by_role(users_collection: AsyncIOMotorCollection,credit_coll
     
     # Return Pydantic models
     users_to_return = [UserWithBalance(**user) for user in users]
-    print(users_to_return)
+    #print(users_to_return)
     return users_to_return
 
 async def increment_verification_count(users_collection: AsyncIOMotorCollection, user_id: str) -> Optional[UserInDB]:

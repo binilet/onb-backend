@@ -15,6 +15,8 @@
 #testing api using uvicorn [navigate to the app directory]
 #uvicorn main:app --reload --host 0.0.0.0 --port 8001
 
+#MONGODB_URL=mongodb+srv://binilet0:Dq89lEpLSMswxeyC@cluster0.kq7xmug.mongodb.net
+
 #copy folder and files to vps
 mv ./backend/app/.env ./backend/app/.env.bak
 scp -r ./backend/app/* root@138.68.90.48:/onbingo-admin/admin-dashboard/app/

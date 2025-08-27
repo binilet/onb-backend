@@ -2,6 +2,7 @@ from typing import Optional, List
 from motor.motor_asyncio import AsyncIOMotorCollection
 from datetime import datetime, timedelta
 from schemas.creditBalance import CreditBalanceInDB
+from schemas.transactionHistory import TransactionHistoryBase
 
 async def get_credit_balances_by_date_range(
     balances_collection: AsyncIOMotorCollection,
@@ -30,3 +31,16 @@ async def get_credit_balances_by_phone(
     if balance is None:
         return None
     return CreditBalanceInDB(**balance)
+
+async def get_credit_histories_by_phone(
+    history_collection: AsyncIOMotorCollection,
+    phone: str
+) -> List[TransactionHistoryBase]:
+    
+    cursor = history_collection.find({"phone": phone})
+    histories = await cursor.to_list(length=None)  # convert to list
+    
+    if not histories:
+        return []
+    
+    return [TransactionHistoryBase(**history) for history in histories]
