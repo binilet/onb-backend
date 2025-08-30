@@ -99,9 +99,11 @@ async def get_users_by_role(users_collection: AsyncIOMotorCollection,credit_coll
         user["current_balance"] = balances["current_balance"]
         user["previous_balance"] = balances["previous_balance"]
     
+    # Order by current_balance descending before returning
+    users_sorted = sorted(users, key=lambda u: u["current_balance"], reverse=True)
+
     # Return Pydantic models
-    users_to_return = [UserWithBalance(**user) for user in users]
-    #print(users_to_return)
+    users_to_return = [UserWithBalance(**user) for user in users_sorted]
     return users_to_return
 
 async def increment_verification_count(users_collection: AsyncIOMotorCollection, user_id: str) -> Optional[UserInDB]:

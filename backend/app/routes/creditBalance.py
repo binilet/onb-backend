@@ -42,7 +42,7 @@ async def get_credit_histories_by_phone_number(
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
     print('phone is: ' + phone)
-    if current_user.role != "system":
+    if current_user.role != "system" | current_user.role != "admin" | current_user.role != "agent":
         raise HTTPException(status_code=403, detail="Not enough permissions")
     balances = await get_credit_histories_by_phone(db.transactionhistories, phone)
     return balances
