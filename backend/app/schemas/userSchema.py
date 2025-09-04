@@ -18,6 +18,7 @@ class UserSchema(BaseModel):
     pwd_change_date: Optional[datetime] = None
     createdAt: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     password: str
+    invitedBy:Optional[str] = None
 
     @field_validator('password')
     def validate_password(cls, v):
@@ -36,6 +37,7 @@ class UserUpdate(BaseModel):
     isActive: Optional[bool] = None
     banUntil: Optional[datetime] = None
     verified: Optional[bool] = None
+    
 
 
 class UserLogin(BaseModel):

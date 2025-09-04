@@ -20,6 +20,7 @@ class UserInDB(UserSchema):
 class UserWithBalance(UserInDB):
     current_balance: float = 0.0
     previous_balance: float = 0.0
+    promo_balance: float = 0.0
 
     class config:
         populate_by_name = True

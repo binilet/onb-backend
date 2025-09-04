@@ -37,7 +37,7 @@ async def update_user_details(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
-    if current_user.id != user_id and current_user.role != "system":
+    if current_user.role == "user":
         raise HTTPException(status_code=403, detail="Not enough permissions")
     
     update_data = user_update.model_dump(exclude_unset=True)
@@ -65,7 +65,6 @@ async def read_all_users_by_role(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
-
     if current_user.role == "user":
         raise HTTPException(status_code=403, detail="Not enough permissions")
     

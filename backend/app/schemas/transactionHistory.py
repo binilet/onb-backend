@@ -7,7 +7,11 @@ class TransactionHistoryBase(BaseModel):
     date: datetime = Field(default_factory=datetime.utcnow)
     game_id: Optional[str] = Field(default=None)
     transaction_ref: Optional[str] = Field(default=None)
-    amount: float = Field(..., gt=0, description="Amount must be greater than 0")
+    amount: float
+    net_amount:float
+    bet_amount: Optional[float] = Field(default=0.0)
+    total_players: Optional[float] = Field(default=0.0)
+    
     type: Optional[str] = Field(default=None) #Literal["deposit", "withdrawal", "game_won", "game_lost", "transfer_in","transfer_out","bonus"]
     message: str = Field(..., max_length=200)
     isdebit: bool = True

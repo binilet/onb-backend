@@ -74,6 +74,7 @@ async def get_users_by_role(users_collection: AsyncIOMotorCollection,credit_coll
     else:
         return []
     
+    print(f'role is {current_user.role}')
      # Fetch users
     #users = await users_collection.find(query).skip(skip).limit(limit).to_list(length=None)
     users = await users_collection.find(query).to_list(length=None)
@@ -87,7 +88,8 @@ async def get_users_by_role(users_collection: AsyncIOMotorCollection,credit_coll
     credit_map = {
         str(cb["phone"]): {
             "current_balance": cb.get("current_balance", 0),
-            "previous_balance": cb.get("previous_balance", 0)
+            "previous_balance": cb.get("previous_balance", 0),
+            "promo_balance":cb.get("promo_balance",0)
         }
         for cb in credit_balances
     }
@@ -95,9 +97,14 @@ async def get_users_by_role(users_collection: AsyncIOMotorCollection,credit_coll
     # Attach credit balances
     for user in users:
         user_phone_str = str(user["phone"])
-        balances = credit_map.get(user_phone_str, {"current_balance": 0, "previous_balance": 0})
+        balances = credit_map.get(user_phone_str, {
+            "current_balance": 0,
+            "previous_balance": 0,
+            "promo_balance": 0   # ✅ added fallback
+        })
         user["current_balance"] = balances["current_balance"]
         user["previous_balance"] = balances["previous_balance"]
+        user["promo_balance"] = balances["promo_balance"]
     
     # Order by current_balance descending before returning
     users_sorted = sorted(users, key=lambda u: u["current_balance"], reverse=True)
