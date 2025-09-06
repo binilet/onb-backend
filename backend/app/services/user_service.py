@@ -66,18 +66,28 @@ async def get_users(users_collection: AsyncIOMotorCollection,current_user: UserI
 async def get_users_by_role(users_collection: AsyncIOMotorCollection,credit_collection: AsyncIOMotorCollection, current_user: UserInDB,role:str, skip: int = 0,limit = 10) -> list[UserWithBalance]:
 # Determine filter based on role
     if current_user.role == "system":
-        query = {"role": role}
+        query = {"role": {"$in": [role, "system"]}}
     elif current_user.role == "agent":
-        query = {"agentId": current_user.phone, "role": role}
+        if role == "user":
+            query = {"agentId": current_user.phone, "role": {"$in": ["user", "admin"]}}
+        else:
+            query = {"agentId": current_user.phone, "role": role}
     elif current_user.role == "admin":
         query = {"adminId": current_user.phone, "role": role}
     else:
         return []
     
-    print(f'role is {current_user.role}')
-     # Fetch users
-    #users = await users_collection.find(query).skip(skip).limit(limit).to_list(length=None)
     users = await users_collection.find(query).to_list(length=None)
+    
+    if current_user.role == "agent" and role == "user":
+        print("Fetching additional users for agent")
+        admin_users = [user for user in users if user.get("role") == "admin"]
+        if admin_users:
+            admin_phones = [admin["phone"] for admin in admin_users]
+            additional_users = await users_collection.find({"adminId": {"$in": admin_phones}, "role": "user"}).to_list(length=None)
+            users.extend(additional_users)
+            users = [user for user in users if user.get("role") != "admin"]
+    
     if not users:
         return []
     
