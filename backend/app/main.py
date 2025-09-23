@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
-from routes import auth,user,game,deposit,withdrawls,creditBalance,addisPayDeposit,addisPayWithdaw,manualDeposit,manualWithdraw
+from routes import auth,user,game,deposit,withdrawls,creditBalance,addisPayDeposit,addisPayWithdaw,manualDeposit,manualWithdraw,pattern,autoGameRoute
 from contextlib import asynccontextmanager
 from services.manual_pay import watch_deposit_inserts
 from core.db import get_db, get_client
@@ -40,6 +40,8 @@ app.include_router(addisPayDeposit.router)
 app.include_router(addisPayWithdaw.router)
 app.include_router(manualDeposit.router)
 app.include_router(manualWithdraw.router)
+app.include_router(pattern.router)
+app.include_router(autoGameRoute.router)
 
 
 @app.on_event("startup")
@@ -48,3 +50,12 @@ app.include_router(manualWithdraw.router)
 @app.get("/")
 async def read_root():
     return {"message": "welcom to hagere online api"}
+
+
+# Utility to list routes
+@app.on_event("startup")
+async def list_routes():
+    for route in app.routes:
+        if hasattr(route, "methods"):
+            methods = ",".join(route.methods)
+            print(f"{methods:10s} {route.path}")
