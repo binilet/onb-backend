@@ -36,12 +36,18 @@ async def create_or_update_game(
     Create a new game if gameId does not exist, otherwise update it.
     Expects game_data to already include gameId and other fields.
     """
-    data = game_data.dict()  # ✅ correct way with Pydantic
+    #data = game_data.dict()  # ✅ correct way with Pydantic
+    data = game_data.dict(exclude_unset=True)
+
     now = datetime.utcnow()
 
     # handle time conversion
     if "startTimeLocal" in data:
+        print('setting local time: ')
         data["startTimeUtc"] = convert_local_to_utc(data["startTimeLocal"])
+
+    print(f"utc time set to: {data['startTimeUtc']}")
+    print(f"local time set to: {data['startTimeLocal']}")
 
     data["updatedAt"] = now
 
@@ -110,6 +116,7 @@ async def get_by_date_range(
     - If only start is given → same-day games.
     - If both start and end are given → range.
     """
+    
     if start_date is None and end_date is None:
         # Use today in LOCAL_TZ
         today_local = datetime.now(LOCAL_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -118,12 +125,13 @@ async def get_by_date_range(
 
     if start_date.tzinfo is None:
         start_date = start_date.replace(tzinfo=LOCAL_TZ)
+        
     start_utc = start_date.astimezone(timezone.utc)
 
     if end_date:
         if end_date.tzinfo is None:
             end_date = end_date.replace(tzinfo=LOCAL_TZ)
-        end_utc = end_date.astimezone(timezone.utc)
+        end_utc = end_date.astimezone(timezone.utc) 
     else:
         # only start_date given → cover full local day
         end_utc = (start_date + timedelta(days=1)).astimezone(timezone.utc)
