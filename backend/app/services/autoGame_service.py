@@ -36,6 +36,10 @@ async def create_or_update_game(
     Create a new game if gameId does not exist, otherwise update it.
     Expects game_data to already include gameId and other fields.
     """
+
+    if not game_data.pattern and not game_data.dynamicPattern:
+        raise ValueError("Either pattern or dynamicPattern must be provided.")
+
     #data = game_data.dict()  # ✅ correct way with Pydantic
     data = game_data.dict(exclude_unset=True)
 

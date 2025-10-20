@@ -4,7 +4,9 @@ import asyncio
 from routes import auth,user,game,deposit,withdrawls,creditBalance,addisPayDeposit,addisPayWithdaw,manualDeposit,manualWithdraw,pattern,autoGameRoute
 from contextlib import asynccontextmanager
 from services.manual_pay import watch_deposit_inserts
+from core.winningDistribution import periodic_auto_distribute
 from core.db import get_db, get_client
+from core.config import settings
 
 db = get_db()
 client = get_client()
@@ -13,10 +15,12 @@ client = get_client()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     #on startup
-    task = asyncio.create_task(watch_deposit_inserts(db,client))
+    deposit_task  = asyncio.create_task(watch_deposit_inserts(db,client))
+    auto_dist_task = asyncio.create_task(periodic_auto_distribute(db_client=client,interval_seconds=settings.AUTO_DISTRIBUTE_INTERVAL_SECONDS))
     yield
     #on shutdown
-    task.cancel()
+    deposit_task .cancel()
+    auto_dist_task.cancel()
 
 app = FastAPI(lifespan=lifespan)
 

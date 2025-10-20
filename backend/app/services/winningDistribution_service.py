@@ -168,6 +168,7 @@ async def get_distribution_summary_by_phone(
         "monthToDate": summaries[2]["amount"],
         "yearToDate": summaries[3]["amount"]
     }
+
 async def approvDistributions(collection: AsyncIOMotorCollection,current_user: UserInDB, game_id:str):
     print(game_id)
     result = await collection.update_many(

@@ -27,7 +27,8 @@ class AutoGameBase(BaseModel):
     isDistributed: bool = False
     isVoid: bool = False
     gameNote: Optional[str] = None
-    pattern: str  # ObjectId string
+    pattern: Optional[str] = None # ObjectId string
+    dynamicPattern: Optional[str] = None  # JSON string for dynamic pattern
     playerBoards: List[PlayerBoard] = Field(default_factory=list)
     gameWinners: List[GameWinner] = Field(default_factory=list)
     startTimeLocal: datetime

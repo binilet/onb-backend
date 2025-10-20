@@ -1,5 +1,6 @@
 from fastapi import Depends
 from motor.motor_asyncio import AsyncIOMotorClient,AsyncIOMotorDatabase
+import asyncio
 from schemas.gameTransactionSchema import GameTransactionInDB
 from schemas.winningDistributionSchema import WinningDistributionInDB
 from typing import List,Optional
@@ -8,7 +9,11 @@ from services.user_service import get_users_by_phones,get_user_by_phone
 from models.user import UserInDB
 from pymongo.errors import PyMongoError
 from core.config import settings
-from core.db import get_db
+from core.db import get_db, get_client
+from collections import defaultdict
+from schemas.creditBalance import CreditBalanceInDB
+from schemas.transactionHistory import TransactionHistoryCreate
+from datetime import datetime
 
 
 async def calculate_winning_distribution(
@@ -22,17 +27,20 @@ async def calculate_winning_distribution(
     distribution_collection = db_client[db_name].WinningDistributions
     game_collection = db_client[db_name].gametransactions
 
+    print(f"distributions  for game {game_id}, is-redistribute -> {redistribute}")
+
     if(not redistribute and game_id):
         distributions = await distribution_collection.find({"gameId": game_id}).to_list(length=None)
         if distributions:
             print(f"distributions already found for game {game_id}")
             return distributions
         
-    undistributed_games =[]
+    undistributed_games = []
 
     if(game_id and redistribute):
         isDeposited = await distribution_collection.find_one({"gameId": game_id,"deposited":True})
         if isDeposited:
+            #this should reverse the transaction and redistribute
             raise Exception("Distribution already deposited.")
         else:
             await distribution_collection.delete_many({"gameId": game_id})
@@ -44,7 +52,8 @@ async def calculate_winning_distribution(
     else:
         undistributed_games = await get_undistributed_games(game_collection,game_id)
         if not undistributed_games or len(undistributed_games) == 0:
-         raise Exception("No undistributed games found.")
+            print('found no undistributed games ...')
+            raise Exception("No undistributed games found.")
     
     print(f"undistributed games count: {len(undistributed_games)}")
     all_inserted_distributions = []
@@ -109,7 +118,6 @@ async def calculate_winning_distribution(
     print("done game distribution for games ...")
     return all_inserted_distributions
 
-
 async def distribute_winning(game: GameTransactionInDB, db) -> List[WinningDistributionInDB]: # Removed Depends for broader use
     """
     This method will perform the actual game winning distribution to agents and admins.
@@ -158,7 +166,9 @@ async def distribute_winning(game: GameTransactionInDB, db) -> List[WinningDistr
         player.agentId if player.agentId not in falsy_values else 'system',
         player.adminId if player.adminId not in falsy_values else 'system',
     )
+
     for player in game_players_details
+    
     })
 
 
@@ -278,7 +288,6 @@ async def distribute_winning(game: GameTransactionInDB, db) -> List[WinningDistr
         
     return distributions
 
-
 def get_players_under_agent_admin_pair(agent_phone, admin_phone, game_players_details, falsy_values):
     """
     Returns a list of players matching the given agent/admin pair.
@@ -309,54 +318,139 @@ def get_players_under_agent_admin_pair(agent_phone, admin_phone, game_players_de
             if p_detail.agentId == agent_phone and p_detail.adminId == admin_phone
         ]
 
-# async def distribute_winning(game:GameTransactionInDB,db: AsyncIOMotorDatabase = Depends(get_db)) -> List[WinningDistributionInDB]:
-#     """
-#     this method will perform the actual game winning distribution
-#     """
-#     if not game.players or len(game.players) == 0:
-#         print(f"Game {game.game_id} has no players.")
-#         return None
-    
-#     #get all player objects to get their agents
-#     game_players:List[UserInDB] = await get_users_by_phones(db.users,game.players)
-#     if not game_players:
-#         return None
-    
-#     total_distributable:float = game.total_winning - game.player_winning
-#     total_players:int = len(game.players)
+async def auto_distribute_manual_game(db_client: AsyncIOMotorDatabase = Depends(get_client)):
+    try:
+        print("********************************************** starting automatic manual game distributions ******************************************")
 
-#     #distinct_agents = list({_user['agentId'] for _user in game_players}) #{} this is a set operator so distinct
+        db_name = settings.MONGODB_NAME
+        distribution_collection = db_client[db_name].WinningDistributions
+        game_collection = db_client[db_name].gametransactions
 
-#     distinct_agents = list({(_user['agentId'], _user['adminId']) for _user in game_players})
-
-    
-#     for (_agent,_admin) in distinct_agents:
-#         if _agent == "system" and _admin == "system":
-#             continue
+        undistributed_games = await get_undistributed_games(game_collection)
+        if not undistributed_games or len(undistributed_games) == 0:
+            raise Exception("No undistributed games found.")
         
-#         #get the agent
-#         agent_obj = await get_user_by_phone(db.users,_agent)
-#         if not agent_obj:
-#             continue
+        async with await db_client.start_session() as session:
+            for game in undistributed_games:
+                if not (game.game_completed and not game.game_distributed):
+                    print(f"^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Game {game.game_id} is not completed or already distributed.")
+                    continue
 
-#         #get the admin
-#         admin_obj = await get_user_by_phone(db.users,_admin)
-#         if not admin_obj:
-#             continue
+                try:
+                    async with session.start_transaction():
+                        distributions = await distribute_winning(game, db_client[db_name])
+                        if not distributions:
+                            print(f"############### distributions not found for Game {game.game_id}")
+                            continue
 
-#         agent_admin_players = [player for player in game_players if player.agentId == _agent and player.adminId == _admin]
-#         agent_admin_player_count = len(agent_admin_players)
+                        # Insert distributions
+                        await distribution_collection.insert_many([d.model_dump() for d in distributions], session=session)
+                        
+                        # Update game status
+                        await game_collection.update_one(
+                            {"game_id": game.game_id},
+                            {"$set": {"game_distributed": True}}, 
+                            session=session
+                        )
+                        
+                        # Update credits for THIS game only
+                        await credit_update_for_distribution(distributions, db_client[db_name], session)
+                        
+                        # If we reach here, commit the transaction
+                        await session.commit_transaction()
+                        print(f"✅ Successfully processed game {game.game_id}")
+
+                except Exception as error:  # Catch ALL exceptions, not just PyMongoError
+                    print(f"##################### exception thrown for game_id -> {game.game_id} ########################")
+                    print(error)
+                    print(f"############################ end exception for game_id {game.game_id} ########################")
+                    
+                    try:
+                        await session.abort_transaction()
+                        print(f"🔄 Transaction aborted for game_id -> {game.game_id}")
+                    except Exception as abort_err:
+                        print(f"❌ Failed to abort transaction for game_id -> {game.game_id}: {abort_err}")
+                    continue
         
-#         if agent_admin_player_count == 0:
-#             continue
+    except Exception as e: 
+        print(f"❌ Overall error in auto_distribute_manual_game: {e}")
 
-#         agentPercent = agent_obj.agentPercent
-#         adminPercent = admin_obj.adminPercent
-#         system_percent = 100 - agent_obj.agentPercent #whoever the system dealt with
-#         agent_cut = (agent_admin_player_count/total_players) * total_distributable * agentPercent/100
-#         system_cut = (agent_admin_player_count/total_players) * total_distributable * system_percent/100
-#         #now distribute the total agent cut to the admins of that agent
+async def credit_update_for_distribution(distributions: List[WinningDistributionInDB], db: AsyncIOMotorDatabase, session) -> bool:
+    try:
+        #raise Exception('invalid error - > rollback test')
+        credit_collection = db.creditbalances
+        history_collection = db.transactionhistories
 
-#         admin_cut = agent_cut * adminPercent/100
-#         final_agent_cut = agent_cut - admin_cut
+        grouped = defaultdict(lambda: {"amount": 0.0})
+        for d in distributions:
+            try:
+                amount = float(d.amount)
+                grouped[(d.gameId, d.phone)]["amount"] += amount
+            except (ValueError, TypeError):
+                print(f"⚠️ Invalid amount for {d.phone} in game {d.gameId}: {d.amount}")
+                continue
+
+        transaction_docs = []
+
+        print("▶ updating credits and transaction histories within same session")
+        print(f'length of grouped: {len(grouped)}')  # Fixed: use len() not .length
         
+        for (gameId, phone), data in grouped.items():
+            print(f'Processing {phone} for game {gameId}')
+            amount = float(data["amount"])
+
+            existing = await credit_collection.find_one({"phone": phone}, session=session)
+            previous_balance = existing["current_balance"] if existing else 0.0
+            
+            await credit_collection.update_one(
+                {"phone": phone},
+                {
+                    "$set": {
+                        "previous_balance": previous_balance,
+                        "modified_at": datetime.now(),
+                    },
+                    "$inc": {"current_balance": amount},
+                    "$setOnInsert": {
+                        "created_at": datetime.now(),
+                        "remark": "Initial credit on win - autoDistribution",
+                    },
+                },
+                upsert=True,
+                session=session
+            )
+            
+            trx = TransactionHistoryCreate(
+                phone=phone,
+                game_id=gameId,
+                transaction_ref=f"{gameId}-{phone}-{datetime.now().timestamp()}",
+                amount=amount,
+                net_amount=amount,
+                type="commission",
+                message=f"commission for game {gameId}",
+                isdebit=True,
+                reference=f"{gameId}-{phone}-{datetime.now().timestamp()}",
+                remark="Auto distributed game winnings",
+            )
+            transaction_docs.append(trx.model_dump())
+
+        if transaction_docs:
+            await history_collection.insert_many(transaction_docs, session=session)
+
+        print("✅ credit and transaction history prepared successfully")
+        return True
+
+    except Exception as e:
+        print(f"❌ Error in credit_update_for_distribution: {e}")
+        raise  # Re-raise to trigger transaction rollback
+async def periodic_auto_distribute(db_client, interval_seconds: int):
+    """
+    Periodically runs the auto_distribute_manual_game routine based on .env interval.
+    """
+    while True:
+        try:
+            print(f"[{datetime.now()}] ▶ Running scheduled distribution...")
+            await auto_distribute_manual_game(db_client=db_client)
+            print(f"[{datetime.now()}] ✅ Distribution completed. Sleeping {interval_seconds}s.")
+        except Exception as e:
+            print(f"❌ Error during auto distribution loop: {e}")
+        await asyncio.sleep(interval_seconds)

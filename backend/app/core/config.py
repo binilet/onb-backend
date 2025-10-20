@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     VERIFICATION_CODE_EXPIRE_MINUTES: int = 10
     MAX_VERIFICATION_ATTEMPTS: int = 5
     IS_PRODUCTION: bool = False
+    AUTO_DISTRIBUTE_INTERVAL_SECONDS: int = 3600
 
     class Config:
         env_file = ".env"

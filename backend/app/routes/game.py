@@ -106,6 +106,7 @@ async def game_distribution(
         distributed_data = await calculate_winning_distribution(db,game_id,redistribute)
         return distributed_data
     except Exception as e:
+        print(e)
         raise HTTPException(status_code=500, detail="Internal server error: {}".format(str(e)))
     
 
