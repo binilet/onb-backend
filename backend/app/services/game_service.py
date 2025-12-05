@@ -105,6 +105,7 @@ async def get_undistributed_games(games_collection:AsyncIOMotorCollection,game_i
     else:
         cursor = games_collection.find({
             "is_void": False,
+            "date": { "$gt": datetime(2025, 10, 20) },
             "game_completed": True,
             "$or": [
                 { "game_distributed": False },

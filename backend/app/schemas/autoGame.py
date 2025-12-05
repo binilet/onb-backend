@@ -37,9 +37,17 @@ class AutoGameBase(BaseModel):
 
     @validator("pattern", pre=True)
     def extract_id(cls, v):
+        if v in ("",None):
+            return None
         if isinstance(v, dict) and "_id" in v:
             return str(v["_id"])
         return str(v)
+    
+    @validator("dynamicPattern", pre=True)
+    def validate_dynamic_pattern(cls, v):
+        if v in ("",None):
+            return None
+        return v
 
 
 class AutoGameCreate(AutoGameBase):
@@ -50,9 +58,9 @@ class AutoGameUpdate(BaseModel):
     gameName: Optional[str] = None
     betAmount: Optional[float] = None
     totalWinning: Optional[float] = None
-    #boardIds: Optional[List[int]] = Field(default_factory=list)
+    boardIds: Optional[List[int]] = Field(default_factory=list)
     #callList: Optional[List[int]] = Field(default_factory=list)
-    #playerBoards: Optional[List[PlayerBoard]] = Field(default_factory=list)
+    playerBoards: Optional[List[PlayerBoard]] = Field(default_factory=list)
     #gameWinners: Optional[List[GameWinner]] = Field(default_factory=list)
     gameStatus: Optional[Literal["created","scheduled", "running", "completed"]] = None
     isDistributed: Optional[bool] = None

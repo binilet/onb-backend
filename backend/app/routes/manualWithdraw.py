@@ -5,7 +5,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from fastapi import HTTPException, status
 
 from models.user import UserInDB  
-from services.manual_pay import getManualWithdrawRequests,approve_manual_withdraw_request
+from services.manual_pay import getManualWithdrawRequests,approve_manual_withdraw_request,void_manual_withdraw_request
 from schemas.manualPay.manual_request import ManualWithRequest
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -39,7 +39,7 @@ async def approve_withdrawl(
     client: AsyncIOMotorClient = Depends(get_client),
      ):
     print('starting withdrawal request approval ...')
-    if current_user.role != "system":
+    if current_user.role != "system" and current_user.role != "employee":
         raise HTTPException(status_code=403, detail="Not enough permissions")
     
     print(withdraw_id)
@@ -47,3 +47,17 @@ async def approve_withdrawl(
     
     success = await approve_manual_withdraw_request(client,db.manualwithrequests, db.creditbalances, db.transactionhistories,current_user,withdraw_id,telebirrReference)
     return {"success": success, "message": "Deposit approved." if success else "No changes made."}
+
+@router.patch("/void_requests/{withdraw_id}/void")
+async def void_withdrawl(
+    withdraw_id: str = Path(..., title="The ID of the deposit to approve"),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: UserInDB = Depends(get_current_active_user),
+    client: AsyncIOMotorClient = Depends(get_client),
+     ):
+    print('starting withdrawal request voiding ...')
+    if current_user.role != "system" and current_user.role != "employee":
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+
+    success = await void_manual_withdraw_request(client,db.manualwithrequests, db.creditbalances, db.transactionhistories,current_user,withdraw_id)
+    return {"success": success, "message": "Deposit voided." if success else "No changes made."}

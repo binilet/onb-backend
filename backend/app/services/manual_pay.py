@@ -270,14 +270,14 @@ async def approve_manual_withdraw_request(
         async with session.start_transaction():
             # Step 1: Fetch withdraw request
             with_doc = await withdrawCollection.find_one(
-                {"_id": ObjectId(withdrawId), "approved": False},
+                {"_id": ObjectId(withdrawId), "approved": False, "void":False},
                 session=session
             )
 
             if not with_doc:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Withdraw request not found or already approved."
+                    detail="Withdraw request not found or already approved or is void."
                 )
 
             withdraw = ManualWithRequest(**{**with_doc, "_id": str(with_doc["_id"])})
@@ -288,7 +288,8 @@ async def approve_manual_withdraw_request(
                 {"phone": phone, "current_balance": {"$gte": amount}},
                 [
                     {"$set": {"previous_balance": "$current_balance"}},
-                    {"$set": {"current_balance": {"$subtract": ["$current_balance", amount]}}}
+                    {"$set": {"current_balance": {"$subtract": ["$current_balance", amount]}}},
+                    {"$set": {"requested_withdrawal": {"$subtract": ["$requested_withdrawal", amount]}}}
                 ],
                 session=session
             )
@@ -334,3 +335,67 @@ async def approve_manual_withdraw_request(
         await session.end_session()
 
 
+async def void_manual_withdraw_request(
+    client: AsyncIOMotorClient,
+    withdrawCollection: AsyncIOMotorCollection,
+    creditCollection: AsyncIOMotorCollection,
+    trxHistoryCollection: AsyncIOMotorCollection,
+    current_user: UserInDB,
+    withdrawId: str
+) -> bool:
+    if not ObjectId.is_valid(withdrawId):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid withdraw request ID."
+        )
+
+    session = await client.start_session()
+    try:
+        async with session.start_transaction():
+            # Step 1: Fetch withdraw request
+            with_doc = await withdrawCollection.find_one(
+                {"_id": ObjectId(withdrawId), "approved": False, "void":False},
+                session=session
+            )
+
+            if not with_doc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Withdraw request not found or already voided or is already Approved!"
+                )
+
+            withdraw = ManualWithRequest(**{**with_doc, "_id": str(with_doc["_id"])})
+            phone, amount = withdraw.phone, withdraw.amount
+
+            # Step 2: Add back to credit
+            credit_result = await creditCollection.update_one(
+                {"phone": phone},
+                [
+                    {"$set": {"requested_withdrawal": {"$subtract": ["$requested_withdrawal", amount]}}}
+                ],
+                session=session
+            )
+
+            if credit_result.matched_count == 0:
+                user_exists = await creditCollection.find_one({"phone": phone})
+                if not user_exists:
+                    raise HTTPException(status_code=404, detail="Credit record not found.")
+                raise HTTPException(status_code=400, detail="Insufficient balance.")
+
+            # Step 3: Void the withdraw
+            await withdrawCollection.update_one(
+                {"_id": ObjectId(withdrawId)},
+                {"$set": {
+                    "void": True,
+                    "voidedBy": current_user.username,
+                    "voidedAt": datetime.now()
+                }},
+                session=session
+            )
+            return True
+    except Exception as e:
+        await session.abort_transaction()
+        raise e  # re-raise the original exception
+
+    finally:
+        await session.end_session() 
