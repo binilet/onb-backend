@@ -26,7 +26,7 @@ async def authenticate_user(users_collection: AsyncIOMotorCollection, phone:str,
     user = await get_user_by_phone(users_collection,phone)
     if not user:
         return None
-    if(user.role != "system" and user.role != "agent" and user.role != "admin"):
+    if(user.role != "system" and user.role != "agent" and user.role != "admin" and user.role != "employee"):
         return None
     if not verify_password(password,user.password):
         return None
@@ -66,7 +66,10 @@ async def get_users(users_collection: AsyncIOMotorCollection,current_user: UserI
 async def get_users_by_role(users_collection: AsyncIOMotorCollection,credit_collection: AsyncIOMotorCollection, current_user: UserInDB,role:str, skip: int = 0,limit = 10) -> list[UserWithBalance]:
 # Determine filter based on role
     if current_user.role == "system":
-        query = {"role": {"$in": [role, "system"]}}
+        if role == "agent":
+            query = {"role": {"$in": [role, "system","employee"]}}
+        else:
+            query = {"role": {"$in": [role]}}
     elif current_user.role == "agent":
         if role == "user":
             query = {"agentId": current_user.phone, "role": {"$in": ["user", "admin"]}}

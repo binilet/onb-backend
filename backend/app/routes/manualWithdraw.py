@@ -25,7 +25,7 @@ async def get_manual_deposits(
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
     #limit for sys admin
-    if current_user.role != "system":
+    if current_user.role != "system" and current_user.role != "employee":
        raise HTTPException(status_code=403, detail="Not enough permissions")
     
     return await getManualWithdrawRequests(db.manualwithrequests, startDate, endDate, phone, approved)

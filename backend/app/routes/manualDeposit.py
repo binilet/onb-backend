@@ -25,7 +25,7 @@ async def get_manual_deposits(
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
     #limit for sys admin
-    if current_user.role != "system":
+    if current_user.role != "system" and current_user.role != "employee":
         raise HTTPException(status_code=403, detail="Not enough permissions")
     return await fetch_manual_deposits(db.manualdepositrequests, startDate, endDate, phone, processed)
 
@@ -38,7 +38,7 @@ async def approve_deposit(
     client: AsyncIOMotorClient = Depends(get_client),
     current_user: UserInDB = Depends(get_current_active_user)
      ):
-    if current_user.role != "system":
+    if current_user.role != "system" and current_user.role != "employee":
         raise HTTPException(status_code=403, detail="Not enough permissions")
     
     success = await approve_manual_deposit(client,db.manualdepositrequests, db.creditbalances, db.transactionhistories,deposit_id)

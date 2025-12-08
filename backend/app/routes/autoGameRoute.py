@@ -18,7 +18,7 @@ async def create_autogame(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
-    if not current_user.role == "system":
+    if not current_user.role == "system" and current_user.role != "employee":
         raise HTTPException(status_code=403, detail="Not authorized to create games")
     return await create_game(db.autoGames, game)
 
@@ -28,7 +28,7 @@ async def create_or_update_autogame(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
-    if not current_user.role == "system":
+    if not current_user.role == "system" and current_user.role != "employee":
         raise HTTPException(status_code=403, detail="Not authorized to create games")
     return await create_or_update_game(db.autoGames, game)
 
@@ -41,7 +41,7 @@ async def edit_autogame(
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
     
-    if not current_user.role == "system":
+    if not current_user.role == "system" and current_user.role != "employee":
         raise HTTPException(status_code=403, detail="Not authorized to create games")
     
     updated = await update_game(db.autoGames, game_id, updates)
@@ -57,7 +57,7 @@ async def get_autogame_by_id(
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
     
-    if not current_user.role == "system":
+    if not current_user.role == "system" and current_user.role != "employee":
         raise HTTPException(status_code=403, detail="Not authorized to update games")
     game = await get_by_id(db.autoGames, game_id)
     if not game:
@@ -73,7 +73,7 @@ async def get_autogames_by_date_range(
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
     
-    if not current_user.role == "system":
+    if not current_user.role == "system" and current_user.role != "employee":
         raise HTTPException(status_code=403, detail="Not authorized to get games")
     return await get_by_date_range(db.autoGames, start, end)
 
