@@ -185,7 +185,8 @@ async def distribute_winning(game: GameTransactionInDB, db) -> List[WinningDistr
         "betAmount": game.bet_amount, # Or game.total_bet_amount if available and more suitable
         "totalWinning": game.total_winning,
         "distributable": total_distributable_to_uplines, # Total amount distributed to all uplines
-        "deposited": False,
+        "deposited": True,
+        "approved": True,
     }
 
     cached_users: dict[str, UserInDB] = {}
@@ -333,7 +334,7 @@ async def auto_distribute_manual_game(db_client: AsyncIOMotorDatabase = Depends(
         async with await db_client.start_session() as session:
             for game in undistributed_games:
                 if not (game.game_completed and not game.game_distributed):
-                    print(f"^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Game {game.game_id} is not completed or already distributed.")
+                    print(f"Game {game.game_id} is not completed or already distributed.")
                     continue
 
                 try:
@@ -412,7 +413,7 @@ async def credit_update_for_distribution(distributions: List[WinningDistribution
                     "$inc": {"current_balance": amount},
                     "$setOnInsert": {
                         "created_at": datetime.now(),
-                        "remark": "Initial credit on win - autoDistribution",
+                        "remark": f"game distributed - {gameId}",
                     },
                 },
                 upsert=True,
@@ -442,6 +443,7 @@ async def credit_update_for_distribution(distributions: List[WinningDistribution
     except Exception as e:
         print(f"❌ Error in credit_update_for_distribution: {e}")
         raise  # Re-raise to trigger transaction rollback
+
 async def periodic_auto_distribute(db_client, interval_seconds: int):
     """
     Periodically runs the auto_distribute_manual_game routine based on .env interval.
