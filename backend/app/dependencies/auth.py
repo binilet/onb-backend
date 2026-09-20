@@ -34,10 +34,11 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)],db: Asy
     if user is None:
         raise credentials_exception
     
-    if user.get("ban_until") and user["ban_until"] > datetime.now(timezone.utc):
+    ban_until = user.get("banUntil") or user.get("ban_until")
+    if ban_until and ban_until > datetime.now(timezone.utc):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User is banned until {}".format(user["ban_until"]),
+            detail="User is banned until {}".format(ban_until),
         )
     _user = UserInDB(**user)
     return _user
@@ -45,6 +46,11 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)],db: Asy
 async def get_current_active_user(current_user: Annotated[UserInDB, Depends(get_current_user)]) -> UserInDB:
     if not current_user.isActive:
         raise HTTPException(status_code=400, detail="Inactive user")
+    if current_user.mustChangePassword:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Password change is required before accessing this resource",
+        )
     return current_user
 
 # async def get_current_admin_user(current_user: Annotated[UserInDB, Depends(get_current_active_user)]) -> UserInDB:

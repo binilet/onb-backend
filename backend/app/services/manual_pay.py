@@ -111,20 +111,47 @@ async def approve_manual_deposit(
             trxId = deposit.trxId #deposit["trxId"]
 
             # 2. Update user's balance
+            # user_result = await credit_collection.update_one(
+            #     {"phone": phone},
+            #     [
+            #         { "$set": { "previous_balance": "$current_balance" } },
+            #         { "$set": { "current_balance": { "$add": ["$current_balance", amount] } } }
+            #     ],
+            #     session=session
+            # )
+
             user_result = await credit_collection.update_one(
                 {"phone": phone},
                 [
-                    { "$set": { "previous_balance": "$current_balance" } },
-                    { "$set": { "current_balance": { "$add": ["$current_balance", amount] } } }
+                    {
+                        "$set": {
+                            "phone": phone,
+                            "previous_balance": { "$ifNull": ["$current_balance", 0] },
+                            "current_balance": {
+                                "$add": [
+                                    { "$ifNull": ["$current_balance", 0] },
+                                    amount
+                                ]
+                            },
+                            "promo_balance": { "$ifNull": ["$promo_balance", 0] },
+                            "promo_used": { "$ifNull": ["$promo_used", 0] },
+                            "requested_withdrawal": { "$ifNull": ["$requested_withdrawal", 0] },
+                            "remark": { "$ifNull": ["$remark", "first time created"] },
+                            "created_at": { "$ifNull": ["$created_at", datetime.utcnow()] },
+                            "modified_at": datetime.utcnow()
+                        }
+                    }
                 ],
+                upsert=True,
                 session=session
             )
             print("User update result:", user_result)
-            if user_result.matched_count == 0:
+            if user_result.matched_count == 0 and user_result.upserted_id is None:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="User not found."
                 )
+
 
             # 3. Mark deposit as processed
             await deposit_collection.update_one(
@@ -138,6 +165,7 @@ async def approve_manual_deposit(
                 "phone": phone,
                 "date": datetime.now(),
                 "amount": amount,
+                "net_amount": amount,
                 "type": "deposit",
                 "message": "Manual deposit approved",
                 "isdebit": True,

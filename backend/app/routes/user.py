@@ -3,17 +3,26 @@ from fastapi.responses import JSONResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from bson import ObjectId
 
-from dependencies.auth import get_current_active_user
+from dependencies.auth import get_current_active_user, get_current_user
 from models.user import UserInDB,UserWithBalance
 from schemas.userSchema import UserUpdate
 from services.user_service import get_user, update_user, get_users,get_users_by_role,generate_referral_code
 from core.db import get_db
+from shop.authorization import (
+    ADMIN,
+    AGENT,
+    CASHIER,
+    SYSTEM,
+    get_scoped_staff_user,
+    require_roles,
+    staff_scope_filter,
+)
 
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
 @router.get("/me", response_model=UserInDB)
-async def read_users_me(current_user: UserInDB = Depends(get_current_active_user)):
+async def read_users_me(current_user: UserInDB = Depends(get_current_user)):
     return current_user
 
 @router.get("/user_by_id/{user_id}", response_model=UserInDB)
@@ -22,13 +31,18 @@ async def read_user(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
-    if current_user.id != user_id and current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-    
-    user = await get_user(db.users, user_id=user_id)
+    if current_user.id == user_id:
+        return current_user
+    if current_user.role == SYSTEM:
+        user = await get_user(db.users, user_id=user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        return user
+    require_roles(current_user, AGENT, ADMIN, CASHIER)
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
-    return user
+    return UserInDB(**(await get_scoped_staff_user(db, current_user, user["phone"])))
 
 @router.patch("/{user_id}", response_model=UserInDB)
 async def update_user_details(
@@ -37,14 +51,15 @@ async def update_user_details(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
-    if current_user.role == "user" or current_user.role == "employee":
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-    
-    if (user_update.role == "employee" or user_update.role == "agent") and current_user.role != "system":
-        raise HTTPException(status_code=403, detail="Not enough permissions")
+    if current_user.role != SYSTEM:
+        if current_user.id != user_id:
+            raise HTTPException(status_code=403, detail="Staff may update only their own account")
+        sensitive_fields = {"role", "shopId", "branchId", "agentId", "adminId"}
+        requested_fields = set(user_update.model_dump(exclude_unset=True))
+        if sensitive_fields.intersection(requested_fields):
+            raise HTTPException(status_code=403, detail="Hierarchy assignments must use the authorized shop endpoints")
     
     update_data = user_update.model_dump(exclude_unset=True)
-    print(update_data)
     user = await update_user(db.users, user_id=user_id, update_data=update_data)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -56,11 +71,10 @@ async def read_all_users(skip: int = 0,limit: int = 1000,
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
 
-    if current_user.role == "user":
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-    
-    users = await get_users(db.users,current_user, skip=skip, limit=limit)
-    return users
+    require_roles(current_user, SYSTEM, AGENT, ADMIN, CASHIER)
+    scope = await staff_scope_filter(db, current_user)
+    documents = await db.users.find(scope).skip(skip).limit(limit).to_list(length=limit)
+    return [UserInDB(**user) for user in documents]
 
 @router.get("/all_users_by_role", response_model=list[UserWithBalance])
 async def read_all_users_by_role(
@@ -68,12 +82,13 @@ async def read_all_users_by_role(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
-    if current_user.role == "user":
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-    
-    users = await get_users_by_role(db.users,db.creditbalances,current_user,role=role, skip=skip, limit=limit)
-
-    return users
+    require_roles(current_user, SYSTEM, AGENT, ADMIN, CASHIER)
+    # if current_user.role != SYSTEM:
+    #     raise HTTPException(
+    #         status_code=403,
+    #         detail="Scoped staff reads are available at /api/shop/staff; player balance reports are outside staff scope",
+    #     )
+    return await get_users_by_role(db.users, db.creditbalances, current_user, role=role, skip=skip, limit=limit)
     
 @router.get("/generate-referral")
 def generate_referral(phone:str=Query(...)):

@@ -26,7 +26,7 @@ async def authenticate_user(users_collection: AsyncIOMotorCollection, phone:str,
     user = await get_user_by_phone(users_collection,phone)
     if not user:
         return None
-    if(user.role != "system" and user.role != "agent" and user.role != "admin" and user.role != "employee"):
+    if(user.role != "system" and user.role != "agent" and user.role != "admin" and user.role != "cashier" and user.role != "employee"):
         return None
     if not verify_password(password,user.password):
         return None
@@ -63,11 +63,18 @@ async def get_users(users_collection: AsyncIOMotorCollection,current_user: UserI
     users = await users_cursor.to_list()
     return [UserInDB(**user) for user in users] if users else []
 
-async def get_users_by_role(users_collection: AsyncIOMotorCollection,credit_collection: AsyncIOMotorCollection, current_user: UserInDB,role:str, skip: int = 0,limit = 10) -> list[UserWithBalance]:
-# Determine filter based on role
+async def get_users_by_role(
+    users_collection: AsyncIOMotorCollection,
+    credit_collection: AsyncIOMotorCollection,
+    current_user: UserInDB,
+    role: str,
+    skip: int = 0,
+    limit: int = 10
+) -> list[UserWithBalance]:
+    # Determine filter based on role
     if current_user.role == "system":
         if role == "agent":
-            query = {"role": {"$in": [role, "system","employee"]}}
+            query = {"role": {"$in": [role, "system", "employee"]}}
         else:
             query = {"role": {"$in": [role]}}
     elif current_user.role == "agent":
@@ -79,52 +86,90 @@ async def get_users_by_role(users_collection: AsyncIOMotorCollection,credit_coll
         query = {"adminId": current_user.phone, "role": role}
     else:
         return []
-    
-    users = await users_collection.find(query).to_list(length=None)
-    
+
+    # For agent requesting users, we need to also include users under their admins
     if current_user.role == "agent" and role == "user":
-        print("Fetching additional users for agent")
-        admin_users = [user for user in users if user.get("role") == "admin"]
-        if admin_users:
-            admin_phones = [admin["phone"] for admin in admin_users]
-            additional_users = await users_collection.find({"adminId": {"$in": admin_phones}, "role": "user"}).to_list(length=None)
-            users.extend(additional_users)
-            users = [user for user in users if user.get("role") != "admin"]
-    
-    if not users:
+        # Use an aggregation to gather direct users + users under agent's admins
+        pipeline = [
+            # First: find admins under this agent
+            {"$match": {"agentId": current_user.phone, "role": "admin"}},
+            # Collect admin phones
+            {"$group": {"_id": None, "admin_phones": {"$push": "$phone"}}},
+            # Lookup users that belong to those admins OR directly to the agent
+            {"$lookup": {
+                "from": users_collection.name,
+                "let": {"admin_phones": "$admin_phones"},
+                "pipeline": [
+                    {"$match": {"$expr": {"$and": [
+                        {"$eq": ["$role", "user"]},
+                        {"$or": [
+                            {"$eq": ["$agentId", current_user.phone]},
+                            {"$in": ["$adminId", "$$admin_phones"]}
+                        ]}
+                    ]}}}
+                ],
+                "as": "all_users"
+            }},
+            {"$unwind": "$all_users"},
+            {"$replaceRoot": {"newRoot": "$all_users"}}
+        ]
+
+        # Also include direct users under the agent (in case there are no admins)
+        # We'll use a simpler approach: two queries merged, but keep it efficient
+        # by only fetching phones first, then doing a single $lookup for balances
+        admin_docs = await users_collection.find(
+            {"agentId": current_user.phone, "role": "admin"},
+            {"phone": 1, "_id": 0}
+        ).to_list(length=None)
+        admin_phones = [doc["phone"] for doc in admin_docs]
+
+        user_query = {"$or": [
+            {"agentId": current_user.phone, "role": "user"},
+        ]}
+        if admin_phones:
+            user_query["$or"].append({"adminId": {"$in": admin_phones}, "role": "user"})
+
+        match_stage = {"$match": user_query}
+    else:
+        match_stage = {"$match": query}
+
+    # Build the aggregation pipeline with $lookup for credit balances
+    pipeline = [
+        match_stage,
+        # Join with creditbalances collection
+        {"$lookup": {
+            "from": credit_collection.name,
+            "localField": "phone",
+            "foreignField": "phone",
+            "as": "credit_info"
+        }},
+        # Flatten the credit_info (will be empty array if no match)
+        {"$addFields": {
+            "current_balance": {
+                "$ifNull": [{"$arrayElemAt": ["$credit_info.current_balance", 0]}, 0]
+            },
+            "previous_balance": {
+                "$ifNull": [{"$arrayElemAt": ["$credit_info.previous_balance", 0]}, 0]
+            },
+            "promo_balance": {
+                "$ifNull": [{"$arrayElemAt": ["$credit_info.promo_balance", 0]}, 0]
+            }
+        }},
+        # Remove the joined array to keep output clean
+        {"$project": {"credit_info": 0}},
+        # Sort by current_balance descending (server-side)
+        {"$sort": {"current_balance": -1}},
+        # Pagination
+        {"$skip": skip}
+        # {"$limit": limit}
+    ]
+
+    results = await users_collection.aggregate(pipeline).to_list()
+
+    if not results:
         return []
-    
-    user_phones = [user["phone"] for user in users]
 
-    credit_balances = await credit_collection.find({"phone": {"$in": user_phones}}).to_list(length=None)
-
-    credit_map = {
-        str(cb["phone"]): {
-            "current_balance": cb.get("current_balance", 0),
-            "previous_balance": cb.get("previous_balance", 0),
-            "promo_balance":cb.get("promo_balance",0)
-        }
-        for cb in credit_balances
-    }
-
-    # Attach credit balances
-    for user in users:
-        user_phone_str = str(user["phone"])
-        balances = credit_map.get(user_phone_str, {
-            "current_balance": 0,
-            "previous_balance": 0,
-            "promo_balance": 0   # ✅ added fallback
-        })
-        user["current_balance"] = balances["current_balance"]
-        user["previous_balance"] = balances["previous_balance"]
-        user["promo_balance"] = balances["promo_balance"]
-    
-    # Order by current_balance descending before returning
-    users_sorted = sorted(users, key=lambda u: u["current_balance"], reverse=True)
-
-    # Return Pydantic models
-    users_to_return = [UserWithBalance(**user) for user in users_sorted]
-    return users_to_return
+    return [UserWithBalance(**doc) for doc in results]
 
 async def increment_verification_count(users_collection: AsyncIOMotorCollection, user_id: str) -> Optional[UserInDB]:
     return await update_user(

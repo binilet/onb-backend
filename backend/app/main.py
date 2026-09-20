@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 from routes import auth,user,game,deposit,withdrawls,creditBalance,addisPayDeposit,addisPayWithdaw,manualDeposit,manualWithdraw,pattern,autoGameRoute
+from shop.router import router as shop_router
 from contextlib import asynccontextmanager
 from services.manual_pay import watch_deposit_inserts
 from core.winningDistribution import periodic_auto_distribute
@@ -46,6 +47,7 @@ app.include_router(manualDeposit.router)
 app.include_router(manualWithdraw.router)
 app.include_router(pattern.router)
 app.include_router(autoGameRoute.router)
+app.include_router(shop_router)
 
 
 @app.on_event("startup")

@@ -5,10 +5,11 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from core.config import settings
 from core.db import get_db
-from core.security import create_access_token
+from core.security import create_access_token, get_password_hash, verify_password
+from dependencies.auth import get_current_user
 
 from models.user import UserInDB
-from schemas.userSchema import UserSchema,UserLogin, Token
+from schemas.userSchema import PasswordChangeRequest, UserSchema,UserLogin, Token
 from services.user_service import (
     authenticate_user,
     create_user,
@@ -23,6 +24,8 @@ router = APIRouter(prefix="/api/auth",tags=["auth"])
 @router.post("/register",response_model=UserInDB)
 async def register(user:UserSchema, db:AsyncIOMotorDatabase  = Depends(get_db)):
     try:
+        if user.role not in (None, "user"):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Staff accounts must be created by an authorized shop endpoint")
         db_user = await get_user_by_phone(db.users,phone=user.phone)
         if db_user:
             raise HTTPException(status_code=4,detail="Phone already registered")
@@ -32,6 +35,8 @@ async def register(user:UserSchema, db:AsyncIOMotorDatabase  = Depends(get_db)):
             raise HTTPException(status_code=400, detail="Username already registered")
         
         return await create_user(db.users, user)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail="Internal server error: {}".format(str(e)))
 
@@ -50,6 +55,23 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncIOMot
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(data={"phone":user.phone,"role":user.role,"agentId":user.agentId},expires_delta=access_token_expires)
     return Token(access_token=access_token, token_type="bearer")
+
+
+@router.post("/change-password")
+async def change_password(
+    payload: PasswordChangeRequest,
+    current_user: UserInDB = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    if not current_user.isActive:
+        raise HTTPException(status_code=400, detail="Inactive user")
+    if not verify_password(payload.currentPassword, current_user.password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    await db.users.update_one(
+        {"phone": current_user.phone},
+        {"$set": {"password": get_password_hash(payload.newPassword), "mustChangePassword": False}},
+    )
+    return {"message": "Password changed"}
 
 @router.post("/request-verification/{phone}")
 async def request_verification(phone: str, db: AsyncIOMotorDatabase = Depends(get_db)):

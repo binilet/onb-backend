@@ -85,8 +85,8 @@ async def get_games_by_range(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
-    if current_user.role != "admin" and current_user.role != "agent" and current_user.role != "system":
-        raise HTTPException(status_code=403, detail="Not enough permissions")
+    # if current_user.role != "system":
+    #     raise HTTPException(status_code=403, detail="Legacy games have no shop scope; use the shop-scoped Game API")
     
     games = await get_games_by_date_range(db.gametransactions,db.users,current_user, start_date, end_date, skip, limit)
     return games
@@ -119,8 +119,8 @@ async def get_winning_distribution(
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
     try:
-        if current_user.role != "admin" and current_user.role != "agent" and current_user.role != "system":
-            raise HTTPException(status_code=403, detail="Not enough permissions")
+        # if current_user.role != "system":
+        #     raise HTTPException(status_code=403, detail="Legacy game data has no shop scope; use the shop-scoped Game API")
     
         distributions = await get_winning_distributions_by_date_range(
             db.WinningDistributions,
@@ -139,8 +139,8 @@ async def get_winning_distribution(
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
     try:
-        if current_user.role != "admin" and current_user.role != "agent" and current_user.role != "system":
-            raise HTTPException(status_code=403, detail="Not enough permissions")
+        # if current_user.role != "system":
+        #     raise HTTPException(status_code=403, detail="Legacy game data has no shop scope; use the shop-scoped Game API")
     
         distributions = await get_distribution_summary_by_phone(
             db.WinningDistributions,
@@ -148,6 +148,7 @@ async def get_winning_distribution(
         )
         return distributions
     except Exception as e:
+        print(e)
         raise HTTPException(status_code=500, detail="Internal server error: {}".format(str(e)))
 
 @router.put("/update_distribution/{game_id}", response_model=bool)
