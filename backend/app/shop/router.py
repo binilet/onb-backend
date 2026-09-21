@@ -180,7 +180,8 @@ async def update_branch_endpoint(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    require_system(current_user)
+    existing_branch = await get_scoped_branch(db, current_user, branch_id)
+    await require_system_or_shop_agent(db, current_user, existing_branch["shopId"])
     branch = await update_branch(db, branch_id, payload)
     if branch is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop branch not found")

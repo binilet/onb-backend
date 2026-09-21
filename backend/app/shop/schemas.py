@@ -43,6 +43,7 @@ class ShopBranchCreate(BaseModel):
     branchName: str
     address: str
     depositPhone: str = Field(min_length=3, max_length=32)
+    telebirrAccountName: str = Field(min_length=2, max_length=120)
     isActive: bool = True
     banUntil: Optional[datetime] = None
 
@@ -51,6 +52,7 @@ class ShopBranchUpdate(BaseModel):
     branchName: Optional[str] = None
     address: Optional[str] = None
     depositPhone: Optional[str] = Field(default=None, min_length=3, max_length=32)
+    telebirrAccountName: Optional[str] = Field(default=None, min_length=2, max_length=120)
     isActive: Optional[bool] = None
     banUntil: Optional[datetime] = None
 
@@ -61,6 +63,7 @@ class ShopBranch(BaseModel):
     branchName: str
     address: str
     depositPhone: Optional[str] = None
+    telebirrAccountName: Optional[str] = None
     isActive: bool = True
     banUntil: Optional[datetime] = None
     createdAt: datetime = Field(default_factory=utc_now)

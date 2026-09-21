@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from bson import ObjectId
 from bson.decimal128 import Decimal128
 from fastapi import HTTPException, status
@@ -147,7 +147,16 @@ async def apply_game_lifecycle_action(db: AsyncIOMotorDatabase, current_user: Us
     if current_user.role not in {SYSTEM, ADMIN, CASHIER}:
         raise HTTPException(status_code=403, detail="Only system, admins, and cashiers may control games")
     game = await get_scoped_shop_game(db, current_user, game_id)
-    if request.action == "VOID":
+    if request.action == "START":
+        if game.status != "PENDING":
+            raise HTTPException(status_code=409, detail="Only pending games can be started")
+        if game.isFrozen:
+            raise HTTPException(status_code=409, detail="Unfreeze the game before starting it")
+        if game.totalWinning is None or game.totalWinning <= 0:
+            raise HTTPException(status_code=422, detail="Set a positive totalWinning before starting the game")
+        starts_at = datetime.now(timezone.utc) + timedelta(seconds=20)
+        changes = {"scheduledStartAt": starts_at, "isPurchaseLocked": True, "note": _system_note(game.note, f"Game start locked by {current_user.phone}; countdown ends at {starts_at.isoformat()}"), "updatedAt": datetime.now(timezone.utc)}
+    elif request.action == "VOID":
         if game.status == "COMPLETE":
             raise HTTPException(status_code=409, detail="Completed games cannot be voided")
         changes = {"status": "VOID", "isFrozen": False, "note": _system_note(game.note, f"Game voided by {current_user.phone}"), "updatedAt": datetime.now(timezone.utc)}

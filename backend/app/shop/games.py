@@ -60,6 +60,7 @@ class ShopGame(BaseModel):
     scheduledStartAt: Optional[datetime] = None
     note: Optional[str] = Field(default=None, max_length=1000)
     isFrozen: bool = False
+    isPurchaseLocked: bool = False
     frozenByPhone: Optional[str] = None
     frozenByRole: Optional[Literal["system", "admin", "cashier"]] = None
     createdByPhone: str
@@ -79,4 +80,4 @@ class GameParticipant(BaseModel):
 
 
 class GameLifecycleRequest(BaseModel):
-    action: Literal["FREEZE", "UNFREEZE", "VOID"]
+    action: Literal["START", "FREEZE", "UNFREEZE", "VOID"]
