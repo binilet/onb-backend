@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 GameStatus = Literal["PENDING", "ACTIVE", "COMPLETE", "VOID"]
+GameFinancialStatus = Literal["NOT_CHARGED", "CUT_DEBITED", "CUT_REFUNDED"]
 GameStartMode = Literal["TIMER", "MANUAL"]
 
 
@@ -56,13 +57,18 @@ class ShopGame(BaseModel):
     totalWinning: Optional[Decimal] = None
     totalCutPercent: Decimal = Field(default=Decimal("10"), ge=10)
     totalCutAmount: Optional[Decimal] = None
+    cutPercentApplied: Optional[Decimal] = None
+    cutDebitedAt: Optional[datetime] = None
+    cutDebitedFromPhone: Optional[str] = None
+    cutLedgerId: Optional[str] = None
+    financialStatus: GameFinancialStatus = "NOT_CHARGED"
     startMode: GameStartMode = "MANUAL"
     scheduledStartAt: Optional[datetime] = None
     note: Optional[str] = Field(default=None, max_length=1000)
     isFrozen: bool = False
     isPurchaseLocked: bool = False
     frozenByPhone: Optional[str] = None
-    frozenByRole: Optional[Literal["system", "admin", "cashier"]] = None
+    frozenByRole: Optional[Literal["system", "agent", "subagent", "admin", "cashier"]] = None
     createdByPhone: str
     status: GameStatus = "PENDING"
     createdAt: datetime = Field(default_factory=utc_now)

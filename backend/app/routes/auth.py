@@ -52,7 +52,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncIOMot
     if not user.isActive:
         raise HTTPException(status_code=400, detail="Inactive user")
     
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token_expires = timedelta(minutes=max(settings.ACCESS_TOKEN_EXPIRE_MINUTES, 60))
     access_token = create_access_token(data={"phone":user.phone,"role":user.role,"agentId":user.agentId},expires_delta=access_token_expires)
     return Token(access_token=access_token, token_type="bearer")
 

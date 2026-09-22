@@ -7,6 +7,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from core.db import get_db
 from dependencies.auth import get_current_active_user
 from models.user import UserInDB
+from schemas.userSchema import UserSchema
 from shop.access import (
     require_system,
     require_system_or_branch_shop_agent,
@@ -16,6 +17,7 @@ from shop.authorization import (
     ADMIN,
     AGENT,
     CASHIER,
+    SUBAGENT,
     SYSTEM,
     branch_scope_filter,
     get_scoped_branch,
@@ -83,11 +85,13 @@ async def list_shops_endpoint(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    require_roles(current_user, SYSTEM, AGENT, ADMIN, CASHIER)
+    require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
     if current_user.role == SYSTEM:
         return await list_shops(db)
-    if current_user.role == AGENT:
-        return await list_shops(db, agent_phone=current_user.phone)
+    if current_user.role in {AGENT, SUBAGENT}:
+        from shop.authorization import descendant_staff_phones
+        phones = [current_user.phone, *(await descendant_staff_phones(db, current_user))]
+        return await list_shops(db, representative_phones=phones)
     if not current_user.shopId:
         raise HTTPException(status_code=403, detail="No shop scope assigned")
     return [Shop(**(await get_scoped_shop(db, current_user, current_user.shopId)))]
@@ -153,7 +157,7 @@ async def list_branches_endpoint(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    require_roles(current_user, SYSTEM, AGENT, ADMIN, CASHIER)
+    require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
     scope = await branch_scope_filter(db, current_user)
     if shop_id is not None:
         await get_scoped_shop(db, current_user, shop_id)
@@ -168,7 +172,7 @@ async def get_branch_endpoint(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    require_roles(current_user, SYSTEM, AGENT, ADMIN, CASHIER)
+    require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
     branch = await get_scoped_branch(db, current_user, branch_id)
     return ShopBranch(**branch)
 
@@ -208,12 +212,20 @@ async def create_staff_endpoint(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    await validate_staff_creation(db, current_user, payload.role, payload.shopId, payload.branchId)
+    await validate_staff_creation(db, current_user, payload.role, payload.shopId, payload.branchId, payload.parentCutPercent)
     if await get_user_by_phone(db.users, payload.phone):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Phone already registered")
     if await get_user_by_username(db.users, payload.username):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already registered")
-    staff = await create_user(db.users, payload.to_user_schema())
+    user_data = payload.model_dump()
+    if user_data.get("parentCutPercent") is None:
+        user_data.pop("parentCutPercent", None)
+    user_data["parentPhone"] = None if payload.role == AGENT else current_user.phone
+    if payload.role == CASHIER:
+        user_data["parentCutPercent"] = 100
+    user_data["agentId"] = current_user.phone if current_user.role == AGENT else current_user.agentId
+    user_data["adminId"] = current_user.phone if current_user.role == ADMIN else None
+    staff = await create_user(db.users, UserSchema(**user_data, mustChangePassword=True))
     await write_action_log(db, current_user, "CREATE", "STAFF", staff.phone, shop_id=staff.shopId, branch_id=staff.branchId, detail={"role": staff.role, "username": staff.username})
     return staff
 
@@ -223,7 +235,7 @@ async def list_staff_endpoint(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    require_roles(current_user, SYSTEM, AGENT, ADMIN, CASHIER)
+    require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
     scope = await staff_scope_filter(db, current_user)
     documents = await db.users.find(scope).to_list(length=None)
     return [UserInDB(**document) for document in documents]
@@ -235,7 +247,7 @@ async def get_staff_endpoint(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    require_roles(current_user, SYSTEM, AGENT, ADMIN, CASHIER)
+    require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
     return UserInDB(**(await get_scoped_staff_user(db, current_user, phone)))
 
 
@@ -256,19 +268,92 @@ async def update_staff_endpoint(
         raise HTTPException(status_code=403, detail="Use the password-change flow for your own password")
     if not is_self and current_user.role == CASHIER:
         raise HTTPException(status_code=403, detail="Cashiers cannot update other staff")
+    if staff.get("role") == SYSTEM:
+        raise HTTPException(status_code=403, detail="System accounts cannot be changed from the staff directory")
+
+    if "role" in changes and changes["role"] != staff.get("role"):
+        allowed_role_changes = {
+            SYSTEM: {AGENT, SUBAGENT, ADMIN, CASHIER},
+            AGENT: {SUBAGENT, ADMIN},
+            SUBAGENT: {ADMIN},
+            ADMIN: {CASHIER},
+        }
+        if changes["role"] not in allowed_role_changes.get(current_user.role, set()):
+            raise HTTPException(status_code=403, detail="You cannot assign this staff role")
+        direct_report = await db.users.find_one(
+            {
+                "phone": {"$ne": phone},
+                "$or": [
+                    {"parentPhone": phone},
+                    {"agentId": phone},
+                    {"adminId": phone},
+                ],
+            },
+            {"phone": 1},
+        )
+        if direct_report is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Move or change this staff member's direct reports before changing their role",
+            )
+        target_shop_id = changes.get("shopId", staff.get("shopId"))
+        target_branch_id = changes.get("branchId", staff.get("branchId"))
+        target_cut = changes.get("parentCutPercent", staff.get("parentCutPercent"))
+        if changes["role"] in {AGENT, SUBAGENT}:
+            target_shop_id = None
+            target_branch_id = None
+        elif changes["role"] == ADMIN:
+            target_branch_id = None
+        await validate_staff_creation(
+            db,
+            current_user,
+            changes["role"],
+            target_shop_id,
+            target_branch_id,
+            target_cut,
+        )
+        changes.update(
+            {
+                "parentPhone": None if changes["role"] == AGENT else current_user.phone,
+                "agentId": (
+                    current_user.phone
+                    if current_user.role == AGENT
+                    else current_user.agentId
+                ),
+                "adminId": current_user.phone if current_user.role == ADMIN else None,
+            }
+        )
+        if changes["role"] in {AGENT, SUBAGENT}:
+            changes.update({"shopId": None, "branchId": None, "adminId": None})
+        elif changes["role"] == ADMIN:
+            changes["branchId"] = None
+            changes["adminId"] = None
+        elif changes["role"] == CASHIER:
+            changes["parentCutPercent"] = 100
 
     if "username" in changes and changes["username"] != staff["username"]:
         existing = await get_user_by_username(db.users, changes["username"])
         if existing is not None:
             raise HTTPException(status_code=409, detail="Username already registered")
+    effective_role = changes.get("role", staff.get("role"))
+    effective_shop_id = changes.get("shopId", staff.get("shopId"))
+    if "shopId" in changes and effective_role not in {ADMIN, CASHIER}:
+        raise HTTPException(status_code=422, detail="Only admins and cashiers may be assigned to a shop")
     if "branchId" in changes:
-        if staff.get("role") != CASHIER:
+        if effective_role != CASHIER:
             raise HTTPException(status_code=422, detail="Only cashier branch assignments may be changed")
         if changes["branchId"] is None:
             raise HTTPException(status_code=422, detail="Cashiers require branchId")
-        branch = await db.shopBranches.find_one({"branch_id": changes["branchId"], "shopId": staff.get("shopId")})
+        branch = await db.shopBranches.find_one({"branch_id": changes["branchId"], "shopId": effective_shop_id})
         if branch is None:
             raise HTTPException(status_code=422, detail="branchId must belong to the cashier shop")
+    if "parentCutPercent" in changes:
+        if changes.get("role", staff.get("role")) == CASHIER:
+            changes["parentCutPercent"] = 100
+        elif staff.get("parentPhone") != current_user.phone and current_user.role != SYSTEM:
+            raise HTTPException(status_code=403, detail="Only the direct parent may change this cut percentage")
+        elif effective_role not in {SUBAGENT, ADMIN}:
+            raise HTTPException(status_code=422, detail="Cut percentages apply only to subagents and admins")
     if "password" in changes:
         changes["password"] = get_password_hash(changes["password"])
         changes["mustChangePassword"] = True
@@ -285,7 +370,7 @@ async def transfer_balance_endpoint(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    require_roles(current_user, SYSTEM, AGENT, ADMIN)
+    require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN)
     ledger = await transfer_balance(db, current_user, payload)
     await write_action_log(db, current_user, "CREATE", "SHOP_BALANCE_TRANSFER", ledger.ledger_id, shop_id=payload.shopId or current_user.shopId, detail={"toPhone": ledger.toPhone, "amountPoints": str(ledger.amountPoints), "reason": ledger.reason})
     return ledger
@@ -297,7 +382,7 @@ async def get_balance_endpoint(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    require_roles(current_user, SYSTEM, AGENT, ADMIN, CASHIER)
+    require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
     return await get_scoped_balance(db, current_user, phone)
 
 
@@ -309,7 +394,7 @@ async def list_balance_ledgers_endpoint(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    require_roles(current_user, SYSTEM, AGENT, ADMIN, CASHIER)
+    require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
     if startAt and endAt and startAt >= endAt:
         raise HTTPException(status_code=422, detail="endAt must be later than startAt")
     return await list_scoped_ledgers(db, current_user, startAt, endAt, phone)
@@ -341,7 +426,7 @@ async def list_player_room_wallets_endpoint(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    require_roles(current_user, SYSTEM, AGENT, ADMIN, CASHIER)
+    require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
     return await list_scoped_player_room_wallets(db, current_user)
 
 
@@ -353,7 +438,7 @@ async def get_player_room_wallet_endpoint(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    require_roles(current_user, SYSTEM, AGENT, ADMIN, CASHIER)
+    require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
     return await get_scoped_player_room_wallet(db, current_user, player_phone, shopId, branchId)
 
 
@@ -365,7 +450,7 @@ async def list_player_room_wallet_ledgers_endpoint(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    require_roles(current_user, SYSTEM, AGENT, ADMIN, CASHIER)
+    require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
     return await list_scoped_player_room_wallet_ledgers(db, current_user, player_phone, shopId, branchId)
 
 
@@ -389,7 +474,7 @@ async def list_shop_games_endpoint(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    require_roles(current_user, SYSTEM, AGENT, ADMIN, CASHIER)
+    require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
     if startAt and endAt and startAt >= endAt:
         raise HTTPException(status_code=422, detail="endAt must be later than startAt")
     filters = {}
@@ -406,7 +491,7 @@ async def list_game_participants_endpoint(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    require_roles(current_user, SYSTEM, AGENT, ADMIN, CASHIER)
+    require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
     return await list_scoped_game_participants(db, current_user, game_id)
 
 
@@ -436,7 +521,7 @@ async def list_action_logs_endpoint(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    require_roles(current_user, SYSTEM, AGENT, ADMIN, CASHIER)
+    require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
     return await list_scoped_action_logs(db, current_user, logDate, shopId)
 
 
@@ -446,5 +531,5 @@ async def get_shop_game_endpoint(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    require_roles(current_user, SYSTEM, AGENT, ADMIN, CASHIER)
+    require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
     return await get_scoped_shop_game(db, current_user, game_id)

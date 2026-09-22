@@ -11,27 +11,53 @@ def utc_now() -> datetime:
 
 
 async def create_shop(db: AsyncIOMotorDatabase, payload: ShopCreate) -> Shop:
-    shop = Shop(**payload.model_dump())
+    representative = await db.users.find_one({"phone": payload.representativePhone, "role": {"$in": ["agent", "subagent", "admin"]}})
+    if representative is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail="Select an agent, subagent, or admin as the Shop representative")
+    shop = Shop(
+        **payload.model_dump(),
+        representativeRole=representative["role"],
+        agentId=payload.representativePhone,
+    )
     await db.shops.insert_one(shop.model_dump())
+    if representative["role"] == "admin":
+        await db.users.update_one({"phone": representative["phone"]}, {"$set": {"shopId": shop.shop_id}})
     return shop
 
 
-async def list_shops(db: AsyncIOMotorDatabase, agent_phone: Optional[str] = None) -> list[Shop]:
-    query = {"agentId": agent_phone} if agent_phone is not None else {}
+async def list_shops(db: AsyncIOMotorDatabase, representative_phones: Optional[list[str]] = None) -> list[Shop]:
+    query = {"$or": [{"representativePhone": {"$in": representative_phones}}, {"agentId": {"$in": representative_phones}}]} if representative_phones is not None else {}
     documents = await db.shops.find(query).to_list(length=None)
+    for document in documents:
+        document.setdefault("representativePhone", document.get("agentId"))
+        document.setdefault("representativeRole", "agent")
     return [Shop(**document) for document in documents]
 
 
 async def get_shop(db: AsyncIOMotorDatabase, shop_id: str) -> Optional[Shop]:
     document = await db.shops.find_one({"shop_id": shop_id})
+    if document:
+        document.setdefault("representativePhone", document.get("agentId"))
+        document.setdefault("representativeRole", "agent")
     return Shop(**document) if document else None
 
 
 async def update_shop(db: AsyncIOMotorDatabase, shop_id: str, payload: ShopUpdate) -> Optional[Shop]:
     changes = payload.model_dump(exclude_unset=True)
+    representative = None
+    if "representativePhone" in changes:
+        representative = await db.users.find_one({"phone": changes["representativePhone"], "role": {"$in": ["agent", "subagent", "admin"]}})
+        if representative is None:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="Select an agent, subagent, or admin as the Shop representative")
+        changes["representativeRole"] = representative["role"]
+        changes["agentId"] = representative["phone"]
     if changes:
         changes["updatedAt"] = utc_now()
         await db.shops.update_one({"shop_id": shop_id}, {"$set": changes})
+        if representative and representative["role"] == "admin":
+            await db.users.update_one({"phone": representative["phone"]}, {"$set": {"shopId": shop_id}})
     return await get_shop(db, shop_id)
 
 

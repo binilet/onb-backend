@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from fastapi.encoders import jsonable_encoder
 
 from models.user import UserInDB
-from shop.authorization import ADMIN, AGENT, CASHIER, SYSTEM
+from shop.authorization import ADMIN, AGENT, CASHIER, SUBAGENT, SYSTEM, shop_scope_filter
 
 
 class ShopActionLog(BaseModel):
@@ -56,8 +56,8 @@ async def list_scoped_action_logs(
 ) -> list[ShopActionLog]:
     if current_user.role == SYSTEM:
         query = {"shopId": shop_id} if shop_id else {}
-    elif current_user.role == AGENT:
-        shops = await db.shops.find({"agentId": current_user.phone}, {"shop_id": 1}).to_list(length=None)
+    elif current_user.role in {AGENT, SUBAGENT}:
+        shops = await db.shops.find(await shop_scope_filter(db, current_user), {"shop_id": 1}).to_list(length=None)
         query = {"$or": [{"shopId": {"$in": [shop["shop_id"] for shop in shops]}}, {"actorPhone": current_user.phone}]}
     elif current_user.role == ADMIN and current_user.shopId:
         query = {"$or": [{"shopId": current_user.shopId}, {"actorPhone": current_user.phone}]}

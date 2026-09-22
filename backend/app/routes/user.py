@@ -12,11 +12,13 @@ from shop.authorization import (
     ADMIN,
     AGENT,
     CASHIER,
+    SUBAGENT,
     SYSTEM,
     get_scoped_staff_user,
     require_roles,
     staff_scope_filter,
 )
+from shop.audit import write_action_log
 
 
 router = APIRouter(prefix="/api/users", tags=["users"])
@@ -51,18 +53,66 @@ async def update_user_details(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
+    existing = await db.users.find_one({"_id": ObjectId(user_id)})
+    if existing is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
     if current_user.role != SYSTEM:
         if current_user.id != user_id:
             raise HTTPException(status_code=403, detail="Staff may update only their own account")
-        sensitive_fields = {"role", "shopId", "branchId", "agentId", "adminId"}
+        sensitive_fields = {
+            "role",
+            "shopId",
+            "branchId",
+            "agentId",
+            "agentPercent",
+            "adminId",
+            "adminPercent",
+            "parentPhone",
+            "parentCutPercent",
+        }
         requested_fields = set(user_update.model_dump(exclude_unset=True))
         if sensitive_fields.intersection(requested_fields):
             raise HTTPException(status_code=403, detail="Hierarchy assignments must use the authorized shop endpoints")
     
     update_data = user_update.model_dump(exclude_unset=True)
+    requested_role = update_data.get("role")
+    if requested_role == SYSTEM:
+        raise HTTPException(status_code=403, detail="The system role cannot be assigned")
+    if existing.get("role") == SYSTEM and requested_role not in {None, SYSTEM}:
+        raise HTTPException(status_code=403, detail="The system account role cannot be changed")
+    if current_user.role == SYSTEM and requested_role and requested_role != existing.get("role"):
+        if requested_role not in {"user", AGENT, SUBAGENT, ADMIN, CASHIER, "employee"}:
+            raise HTTPException(status_code=422, detail="Unsupported role")
+        if requested_role == CASHIER:
+            shop_id = update_data.get("shopId")
+            branch_id = update_data.get("branchId")
+            if not shop_id or not branch_id:
+                raise HTTPException(status_code=422, detail="Cashiers require a shop and branch")
+            branch = await db.shopBranches.find_one({"branch_id": branch_id, "shopId": shop_id})
+            if branch is None:
+                raise HTTPException(status_code=422, detail="The selected branch does not belong to the selected shop")
+        update_data["parentPhone"] = None if requested_role == AGENT else current_user.phone
+        update_data["parentCutPercent"] = 100 if requested_role == CASHIER else 0
+        if requested_role in {AGENT, SUBAGENT, "user", "employee"}:
+            update_data.update({"shopId": None, "branchId": None, "adminId": None})
+        elif requested_role == ADMIN:
+            update_data.update({"branchId": None, "adminId": None})
+        update_data["agentId"] = None
     user = await update_user(db.users, user_id=user_id, update_data=update_data)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
+    if requested_role and requested_role != existing.get("role"):
+        await write_action_log(
+            db,
+            current_user,
+            "UPDATE",
+            "STAFF_ROLE",
+            user.phone,
+            shop_id=user.shopId,
+            branch_id=user.branchId,
+            detail={"fromRole": existing.get("role"), "toRole": requested_role},
+        )
     return user
 
 @router.get("/all_users", response_model=list[UserInDB])
@@ -71,7 +121,7 @@ async def read_all_users(skip: int = 0,limit: int = 1000,
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
 
-    require_roles(current_user, SYSTEM, AGENT, ADMIN, CASHIER)
+    require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
     scope = await staff_scope_filter(db, current_user)
     documents = await db.users.find(scope).skip(skip).limit(limit).to_list(length=limit)
     return [UserInDB(**user) for user in documents]
@@ -82,7 +132,7 @@ async def read_all_users_by_role(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
-    require_roles(current_user, SYSTEM, AGENT, ADMIN, CASHIER)
+    require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
     # if current_user.role != SYSTEM:
     #     raise HTTPException(
     #         status_code=403,

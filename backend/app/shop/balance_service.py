@@ -8,7 +8,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo.errors import DuplicateKeyError
 
 from models.user import UserInDB
-from shop.authorization import ADMIN, AGENT, CASHIER, SYSTEM, get_scoped_staff_user
+from shop.authorization import ADMIN, AGENT, CASHIER, SUBAGENT, SYSTEM, get_scoped_staff_user
 from shop.balances import BalanceTransferRequest, ShopBalance, ShopBalanceLedger
 
 
@@ -36,6 +36,8 @@ def _ledger_from_document(document: dict) -> ShopBalanceLedger:
         document["etbAmount"] = _decimal(document["etbAmount"])
     if document.get("systemCutPercentApplied") is not None:
         document["systemCutPercentApplied"] = _decimal(document["systemCutPercentApplied"])
+    if document.get("sourceAmountPoints") is not None:
+        document["sourceAmountPoints"] = _decimal(document["sourceAmountPoints"])
     return ShopBalanceLedger(**document)
 
 
@@ -43,35 +45,27 @@ async def ensure_balance_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.shopBalances.create_index("phone", unique=True, name="shop_balance_phone_unique")
     await db.shopBalanceLedgers.create_index("ledger_id", unique=True, name="shop_balance_ledger_id_unique")
     await db.shopBalanceLedgers.create_index("idempotencyKey", unique=True, name="shop_balance_ledger_idempotency_unique")
+    await db.shopBalanceLedgers.create_index([("createdAt", -1), ("fromPhone", 1), ("toPhone", 1)], name="shop_balance_ledger_scope_date")
+    await db.users.create_index([("parentPhone", 1), ("role", 1)], name="shop_staff_parent_role")
 
 
 async def _transfer_details(
     db: AsyncIOMotorDatabase, current_user: UserInDB, request: BalanceTransferRequest
-) -> tuple[Optional[str], Decimal, Optional[Decimal], Optional[Decimal], str]:
+) -> tuple[Optional[str], Decimal, Optional[Decimal], Optional[Decimal], Optional[Decimal], str]:
     recipient = await db.users.find_one({"phone": request.toPhone})
     if recipient is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recipient not found")
 
     if current_user.role == SYSTEM:
         recipient_role = recipient.get("role")
-        if recipient_role not in {AGENT, ADMIN, CASHIER}:
-            raise HTTPException(status_code=403, detail="System transfers may target agents, admins, or cashiers only")
+        if recipient_role not in {AGENT, SUBAGENT, ADMIN}:
+            raise HTTPException(status_code=403, detail="System transfers must target the selected Shop representative")
         if not request.shopId or request.etbAmount is None or request.amountPoints is not None:
             raise HTTPException(status_code=422, detail="System grants require shopId and etbAmount only")
-        shop_query = {"shop_id": request.shopId}
-        if recipient_role == AGENT:
-            shop_query["agentId"] = request.toPhone
-        else:
-            shop_query["shop_id"] = recipient.get("shopId")
-            if request.shopId != recipient.get("shopId"):
-                raise HTTPException(status_code=403, detail="The selected shop must match the recipient staff scope")
+        shop_query = {"shop_id": request.shopId, "$or": [{"representativePhone": request.toPhone}, {"agentId": request.toPhone}]}
         shop = await db.shops.find_one(shop_query)
         if shop is None:
-            raise HTTPException(status_code=403, detail="The selected shop is not assigned to this recipient")
-        if recipient_role == CASHIER:
-            branch = await db.shopBranches.find_one({"branch_id": recipient.get("branchId"), "shopId": shop["shop_id"]})
-            if branch is None:
-                raise HTTPException(status_code=403, detail="Cashier branch is outside the selected shop")
+            raise HTTPException(status_code=403, detail="The recipient is not the selected Shop representative")
         cut_percent = _decimal(shop["systemCutPercent"])
         try:
             points = convert_etb_to_points(request.etbAmount, cut_percent)
@@ -79,29 +73,42 @@ async def _transfer_details(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         reason_by_role = {
             AGENT: "SYSTEM_TO_AGENT_GRANT",
+            SUBAGENT: "SYSTEM_TO_SUBAGENT_GRANT",
             ADMIN: "SYSTEM_TO_ADMIN_GRANT",
-            CASHIER: "SYSTEM_TO_CASHIER_GRANT",
         }
-        return None, points, request.etbAmount, cut_percent, reason_by_role[recipient_role]
+        return None, points, None, request.etbAmount, cut_percent, reason_by_role[recipient_role]
 
-    if current_user.role == AGENT:
-        if recipient.get("role") != ADMIN or not recipient.get("shopId"):
-            raise HTTPException(status_code=403, detail="Agents may transfer to admins only")
-        shop = await db.shops.find_one({"shop_id": recipient["shopId"], "agentId": current_user.phone})
-        if shop is None:
-            raise HTTPException(status_code=403, detail="Admin is outside the agent hierarchy")
+    if current_user.role in {AGENT, SUBAGENT}:
+        allowed_roles = {SUBAGENT, ADMIN} if current_user.role == AGENT else {ADMIN}
+        direct_parent = recipient.get("parentPhone") or recipient.get("agentId")
+        if recipient.get("role") not in allowed_roles or direct_parent != current_user.phone:
+            raise HTTPException(status_code=403, detail="Recipient is outside the direct staff hierarchy")
         if request.amountPoints is None or request.etbAmount is not None or request.shopId is not None:
-            raise HTTPException(status_code=422, detail="Agent transfers require amountPoints only")
-        return current_user.phone, request.amountPoints, None, None, "AGENT_TO_ADMIN_TRANSFER"
+            raise HTTPException(status_code=422, detail="Hierarchy transfers require amountPoints only")
+        cut_percent = _decimal(
+            recipient.get("parentCutPercent")
+            or recipient.get("adminPercent")
+            or recipient.get("agentPercent")
+            or 0
+        )
+        try:
+            credited_points = convert_etb_to_points(request.amountPoints, cut_percent)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Recipient parent cut percentage is not configured") from exc
+        reason = "AGENT_TO_SUBAGENT_TRANSFER" if recipient.get("role") == SUBAGENT else (
+            "AGENT_TO_ADMIN_TRANSFER" if current_user.role == AGENT else "SUBAGENT_TO_ADMIN_TRANSFER"
+        )
+        return current_user.phone, credited_points, request.amountPoints, None, cut_percent, reason
 
     if current_user.role == ADMIN:
-        if recipient.get("role") != CASHIER or recipient.get("shopId") != current_user.shopId:
+        direct_parent = recipient.get("parentPhone") or recipient.get("adminId")
+        if recipient.get("role") != CASHIER or recipient.get("shopId") != current_user.shopId or direct_parent != current_user.phone:
             raise HTTPException(status_code=403, detail="Admins may transfer to cashiers in their own shop only")
         if not current_user.shopId:
             raise HTTPException(status_code=403, detail="Admin has no shop scope")
         if request.amountPoints is None or request.etbAmount is not None or request.shopId is not None:
             raise HTTPException(status_code=422, detail="Admin transfers require amountPoints only")
-        return current_user.phone, request.amountPoints, None, None, "ADMIN_TO_CASHIER_TRANSFER"
+        return current_user.phone, request.amountPoints, request.amountPoints, None, Decimal("100"), "ADMIN_TO_CASHIER_TRANSFER"
 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cashiers cannot transfer balances")
 
@@ -110,7 +117,7 @@ async def transfer_balance(
     db: AsyncIOMotorDatabase, current_user: UserInDB, request: BalanceTransferRequest
 ) -> ShopBalanceLedger:
     await ensure_balance_indexes(db)
-    from_phone, amount_points, etb_amount, applied_percent, reason = await _transfer_details(db, current_user, request)
+    from_phone, amount_points, source_amount_points, etb_amount, applied_percent, reason = await _transfer_details(db, current_user, request)
 
     existing = await db.shopBalanceLedgers.find_one({"idempotencyKey": request.idempotencyKey})
     if existing is not None:
@@ -119,6 +126,7 @@ async def transfer_balance(
             existing_ledger.fromPhone != from_phone
             or existing_ledger.toPhone != request.toPhone
             or existing_ledger.amountPoints != amount_points
+            or existing_ledger.sourceAmountPoints != source_amount_points
             or existing_ledger.reason != reason
             or existing_ledger.etbAmount != etb_amount
             or existing_ledger.systemCutPercentApplied != applied_percent
@@ -130,6 +138,7 @@ async def transfer_balance(
         fromPhone=from_phone,
         toPhone=request.toPhone,
         amountPoints=amount_points,
+        sourceAmountPoints=source_amount_points,
         etbAmount=etb_amount,
         systemCutPercentApplied=applied_percent,
         reason=reason,
@@ -145,9 +154,10 @@ async def transfer_balance(
 
                 amount_db = Decimal128(amount_points)
                 if from_phone is not None:
+                    debit_amount = source_amount_points or amount_points
                     sender_update = await db.shopBalances.update_one(
-                        {"phone": from_phone, "currentBalance": {"$gte": amount_db}},
-                        {"$inc": {"currentBalance": Decimal128(-amount_points)}, "$set": {"updatedAt": now}},
+                        {"phone": from_phone, "currentBalance": {"$gte": Decimal128(debit_amount)}},
+                        {"$inc": {"currentBalance": Decimal128(-debit_amount)}, "$set": {"updatedAt": now}},
                         session=session,
                     )
                     if sender_update.matched_count != 1:
@@ -161,6 +171,8 @@ async def transfer_balance(
                 )
                 ledger_document = ledger.model_dump()
                 ledger_document["amountPoints"] = amount_db
+                if source_amount_points is not None:
+                    ledger_document["sourceAmountPoints"] = Decimal128(source_amount_points)
                 if etb_amount is not None:
                     ledger_document["etbAmount"] = Decimal128(etb_amount)
                 if applied_percent is not None:
@@ -208,5 +220,5 @@ async def list_scoped_ledgers(
         filters.append({"$or": [{"fromPhone": phone}, {"toPhone": phone}]})
 
     filtered_query = {} if not filters else filters[0] if len(filters) == 1 else {"$and": filters}
-    documents = await db.shopBalanceLedgers.find(filtered_query).sort("createdAt", -1).to_list(length=None)
+    documents = await db.shopBalanceLedgers.find(filtered_query).sort("createdAt", -1).limit(500).to_list(length=500)
     return [_ledger_from_document(document) for document in documents]

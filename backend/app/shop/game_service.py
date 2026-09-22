@@ -1,17 +1,19 @@
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_UP
+from uuid import uuid4
 from bson import ObjectId
 from bson.decimal128 import Decimal128
 from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from models.user import UserInDB
-from shop.authorization import ADMIN, AGENT, CASHIER, SYSTEM
+from shop.authorization import ADMIN, AGENT, CASHIER, SUBAGENT, SYSTEM, shop_scope_filter
 from shop.games import GameLifecycleRequest, GameParticipant, ShopGame, ShopGameCreate, ShopGameUpdate
 
 
 def _game_from_document(document: dict) -> ShopGame:
     document = document.copy()
-    for field in ("betAmount", "totalWinning", "totalCutPercent", "totalCutAmount"):
+    for field in ("betAmount", "totalWinning", "totalCutPercent", "totalCutAmount", "cutPercentApplied"):
         if document.get(field) is not None and isinstance(document[field], Decimal128):
             document[field] = document[field].to_decimal()
     return ShopGame(**document)
@@ -26,8 +28,8 @@ def _system_note(existing_note: str | None, message: str) -> str:
 async def game_scope_filter(db: AsyncIOMotorDatabase, current_user: UserInDB) -> dict:
     if current_user.role == SYSTEM:
         return {}
-    if current_user.role == AGENT:
-        shops = await db.shops.find({"agentId": current_user.phone}, {"shop_id": 1}).to_list(length=None)
+    if current_user.role in {AGENT, SUBAGENT}:
+        shops = await db.shops.find(await shop_scope_filter(db, current_user), {"shop_id": 1}).to_list(length=None)
         return {"shopId": {"$in": [shop["shop_id"] for shop in shops]}}
     if current_user.role == ADMIN and current_user.shopId:
         return {"shopId": current_user.shopId}
@@ -63,8 +65,8 @@ async def _validate_pattern(db: AsyncIOMotorDatabase, payload: ShopGameCreate) -
 async def create_shop_game(
     db: AsyncIOMotorDatabase, current_user: UserInDB, payload: ShopGameCreate
 ) -> ShopGame:
-    if current_user.role not in {SYSTEM, ADMIN, CASHIER}:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only system, admins, and cashiers may create games")
+    if current_user.role not in {ADMIN, CASHIER}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only funded admins and cashiers may create games")
     await _validate_game_location(db, current_user, payload.shopId, payload.branchId)
     await _validate_pattern(db, payload)
     game = ShopGame(**payload.model_dump(), createdByPhone=current_user.phone)
@@ -80,8 +82,8 @@ async def create_shop_game(
 async def update_shop_game(
     db: AsyncIOMotorDatabase, current_user: UserInDB, game_id: str, payload: ShopGameUpdate
 ) -> ShopGame:
-    if current_user.role not in {SYSTEM, ADMIN, CASHIER}:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only system, admins, and cashiers may edit games")
+    if current_user.role not in {ADMIN, CASHIER}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admins and cashiers may edit games")
     game = await get_scoped_shop_game(db, current_user, game_id)
     changes = payload.model_dump(exclude_unset=True)
     if game.status != "PENDING" and set(changes) - {"note"}:
@@ -150,12 +152,96 @@ async def apply_game_lifecycle_action(db: AsyncIOMotorDatabase, current_user: Us
     if request.action == "START":
         if game.status != "PENDING":
             raise HTTPException(status_code=409, detail="Only pending games can be started")
+        if game.isPurchaseLocked and game.financialStatus == "CUT_DEBITED":
+            return game
         if game.isFrozen:
             raise HTTPException(status_code=409, detail="Unfreeze the game before starting it")
-        if game.totalWinning is None or game.totalWinning <= 0:
-            raise HTTPException(status_code=422, detail="Set a positive totalWinning before starting the game")
+        participants = await db.gameParticipants.find(
+            {"gameId": game_id}, {"playerPhone": 1, "cartelaId": 1}
+        ).to_list(length=None)
+        cartela_count = len(participants)
+        player_count = len({participant.get("playerPhone") for participant in participants if participant.get("playerPhone")})
+        if cartela_count < 2 or player_count < 2:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "WAITING_FOR_PLAYERS",
+                    "message": "Wait for at least 2 players and 2 purchased cartelas before starting.",
+                    "cartelaCount": cartela_count,
+                    "playerCount": player_count,
+                },
+            )
+        gross_amount = game.betAmount * Decimal(cartela_count)
+        cut_amount = (gross_amount * game.totalCutPercent / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        total_winning = gross_amount - cut_amount
+        if cut_amount <= 0 or total_winning <= 0:
+            raise HTTPException(status_code=422, detail="The calculated cut and winning pool must both be positive")
         starts_at = datetime.now(timezone.utc) + timedelta(seconds=20)
-        changes = {"scheduledStartAt": starts_at, "isPurchaseLocked": True, "note": _system_note(game.note, f"Game start locked by {current_user.phone}; countdown ends at {starts_at.isoformat()}"), "updatedAt": datetime.now(timezone.utc)}
+        now = datetime.now(timezone.utc)
+        ledger_id = str(uuid4())
+        idempotency_key = f"game-start-cut:{game_id}"
+        async with await db.client.start_session() as session:
+            async with session.start_transaction():
+                existing_ledger = await db.shopBalanceLedgers.find_one({"idempotencyKey": idempotency_key}, session=session)
+                if existing_ledger is None:
+                    balance = await db.shopBalances.find_one({"phone": game.createdByPhone}, session=session)
+                    available = balance.get("currentBalance", Decimal128(Decimal("0"))) if balance else Decimal128(Decimal("0"))
+                    available_decimal = available.to_decimal() if isinstance(available, Decimal128) else Decimal(str(available))
+                    debit = await db.shopBalances.update_one(
+                        {"phone": game.createdByPhone, "currentBalance": {"$gte": Decimal128(cut_amount)}},
+                        {"$inc": {"currentBalance": Decimal128(-cut_amount)}, "$set": {"updatedAt": now}},
+                        session=session,
+                    )
+                    if debit.matched_count != 1:
+                        raise HTTPException(
+                            status_code=409,
+                            detail={
+                                "code": "INSUFFICIENT_SHOP_BALANCE",
+                                "message": f"{game.createdByPhone} does not have enough Shop balance to start this game.",
+                                "creatorPhone": game.createdByPhone,
+                                "required": str(cut_amount),
+                                "available": str(available_decimal),
+                                "shortfall": str(max(Decimal("0"), cut_amount - available_decimal)),
+                            },
+                        )
+                    await db.shopBalanceLedgers.insert_one({
+                        "ledger_id": ledger_id,
+                        "fromPhone": game.createdByPhone,
+                        "toPhone": None,
+                        "amountPoints": Decimal128(cut_amount),
+                        "sourceAmountPoints": Decimal128(cut_amount),
+                        "systemCutPercentApplied": Decimal128(game.totalCutPercent),
+                        "reason": "GAME_START_CUT",
+                        "idempotencyKey": idempotency_key,
+                        "gameId": game_id,
+                        "shopId": game.shopId,
+                        "branchId": game.branchId,
+                        "initiatedByPhone": current_user.phone,
+                        "createdAt": now,
+                    }, session=session)
+                else:
+                    ledger_id = existing_ledger["ledger_id"]
+                changes = {
+                    "scheduledStartAt": starts_at,
+                    "isPurchaseLocked": True,
+                    "totalCutAmount": Decimal128(cut_amount),
+                    "totalWinning": Decimal128(total_winning),
+                    "cutPercentApplied": Decimal128(game.totalCutPercent),
+                    "cutDebitedAt": now,
+                    "cutDebitedFromPhone": game.createdByPhone,
+                    "cutLedgerId": ledger_id,
+                    "financialStatus": "CUT_DEBITED",
+                    "note": _system_note(game.note, f"Game start locked by {current_user.phone}; {cut_amount} points debited from creator {game.createdByPhone}; countdown ends at {starts_at.isoformat()}"),
+                    "updatedAt": now,
+                }
+                result = await db.games.update_one(
+                    {"game_id": game_id, "status": "PENDING", "isPurchaseLocked": False},
+                    {"$set": changes},
+                    session=session,
+                )
+                if result.matched_count != 1:
+                    raise HTTPException(status_code=409, detail="Game start state changed; refresh and try again")
+        return await get_scoped_shop_game(db, current_user, game_id)
     elif request.action == "VOID":
         if game.status == "COMPLETE":
             raise HTTPException(status_code=409, detail="Completed games cannot be voided")

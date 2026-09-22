@@ -10,7 +10,7 @@ def utc_now() -> datetime:
 
 
 class ShopCreate(BaseModel):
-    agentId: str
+    representativePhone: str
     shopName: str
     systemCutPercent: float = Field(gt=0)
     address: str
@@ -19,7 +19,7 @@ class ShopCreate(BaseModel):
 
 
 class ShopUpdate(BaseModel):
-    agentId: Optional[str] = None
+    representativePhone: Optional[str] = None
     shopName: Optional[str] = None
     systemCutPercent: Optional[float] = Field(default=None, gt=0)
     address: Optional[str] = None
@@ -29,7 +29,9 @@ class ShopUpdate(BaseModel):
 
 class Shop(BaseModel):
     shop_id: str = Field(default_factory=lambda: str(uuid4()))
-    agentId: str
+    representativePhone: str
+    representativeRole: str
+    agentId: Optional[str] = None
     shopName: str
     systemCutPercent: float
     address: str

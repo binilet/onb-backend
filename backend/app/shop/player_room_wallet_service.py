@@ -7,7 +7,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo.errors import DuplicateKeyError
 
 from models.user import UserInDB
-from shop.authorization import ADMIN, AGENT, CASHIER, SYSTEM
+from shop.authorization import ADMIN, AGENT, CASHIER, SUBAGENT, SYSTEM, shop_scope_filter
 from shop.player_room_wallets import PlayerRoomTopUpRequest, PlayerRoomWallet, PlayerRoomWalletLedger
 
 
@@ -43,8 +43,10 @@ async def _validate_room_scope(
     shop = await db.shops.find_one({"shop_id": shop_id})
     if shop is None:
         raise HTTPException(status_code=404, detail="Shop not found")
-    if current_user.role == AGENT and shop.get("agentId") != current_user.phone:
-        raise HTTPException(status_code=403, detail="Outside agent shop scope")
+    if current_user.role in {AGENT, SUBAGENT}:
+        allowed = await db.shops.find_one({**(await shop_scope_filter(db, current_user)), "shop_id": shop_id})
+        if allowed is None:
+            raise HTTPException(status_code=403, detail="Outside staff Shop scope")
     if current_user.role in {ADMIN, CASHIER} and current_user.shopId != shop_id:
         raise HTTPException(status_code=403, detail="Outside staff shop scope")
     if branch_id is not None:
@@ -62,8 +64,6 @@ async def top_up_player_room_wallet(
     player = await db.users.find_one({"phone": request.playerPhone})
     if player is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
-    if player.get("role") not in {None, "user"}:
-        raise HTTPException(status_code=422, detail="Top-up recipient must be a player account")
 
     await ensure_player_room_wallet_indexes(db)
     existing = await db.playerRoomWalletLedgers.find_one({"idempotencyKey": request.idempotencyKey})
@@ -123,7 +123,7 @@ async def get_own_player_room_wallet(
     db: AsyncIOMotorDatabase, current_user: UserInDB, shop_id: str, branch_id: str | None
 ) -> PlayerRoomWallet:
     await _validate_room_scope(db, current_user, shop_id, branch_id)
-    is_withdrawable = current_user.role in {None, "user"}
+    is_withdrawable = True
     await db.playerRoomWallets.update_one(
         {"playerPhone": current_user.phone, "shopId": shop_id},
         {
@@ -163,7 +163,7 @@ async def get_scoped_player_room_wallet(
         shopId=shop_id,
         branchId=branch_id,
         currentBalance=Decimal("0"),
-        isWithdrawable=player.get("role") in {None, "user"},
+        isWithdrawable=True,
     )
 
 
@@ -186,8 +186,8 @@ async def list_scoped_player_room_wallets(
 ) -> list[PlayerRoomWallet]:
     if current_user.role == SYSTEM:
         scope = {}
-    elif current_user.role == AGENT:
-        shops = await db.shops.find({"agentId": current_user.phone}, {"shop_id": 1}).to_list(length=None)
+    elif current_user.role in {AGENT, SUBAGENT}:
+        shops = await db.shops.find(await shop_scope_filter(db, current_user), {"shop_id": 1}).to_list(length=None)
         scope = {"shopId": {"$in": [shop["shop_id"] for shop in shops]}}
     elif current_user.role in {ADMIN, CASHIER} and current_user.shopId:
         scope = {"shopId": current_user.shopId}

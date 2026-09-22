@@ -10,9 +10,33 @@ from models.user import UserInDB
 
 SYSTEM = "system"
 AGENT = "agent"
+SUBAGENT = "subagent"
 ADMIN = "admin"
 CASHIER = "cashier"
-HIERARCHY_STAFF_ROLES = frozenset({SYSTEM, AGENT, ADMIN, CASHIER})
+HIERARCHY_STAFF_ROLES = frozenset({SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER})
+
+
+async def descendant_staff_phones(db: AsyncIOMotorDatabase, current_user: UserInDB) -> list[str]:
+    """Return all direct and indirect staff descendants, including legacy reporting fields."""
+    discovered: set[str] = set()
+    frontier = [current_user.phone]
+    while frontier:
+        parents = frontier
+        frontier = []
+        documents = await db.users.find(
+            {"$or": [
+                {"parentPhone": {"$in": parents}},
+                {"agentId": {"$in": parents}},
+                {"adminId": {"$in": parents}},
+            ], "role": {"$in": list(HIERARCHY_STAFF_ROLES - {SYSTEM})}},
+            {"phone": 1},
+        ).to_list(length=None)
+        for document in documents:
+            phone = document.get("phone")
+            if phone and phone not in discovered and phone != current_user.phone:
+                discovered.add(phone)
+                frontier.append(phone)
+    return list(discovered)
 
 
 def require_roles(current_user: UserInDB, *allowed_roles: str) -> None:
@@ -28,8 +52,9 @@ async def shop_scope_filter(db: AsyncIOMotorDatabase, current_user: UserInDB) ->
     """Return the mandatory Shop query filter for this staff member."""
     if current_user.role == SYSTEM:
         return {}
-    if current_user.role == AGENT:
-        return {"agentId": current_user.phone}
+    if current_user.role in {AGENT, SUBAGENT}:
+        phones = [current_user.phone, *(await descendant_staff_phones(db, current_user))]
+        return {"$or": [{"representativePhone": {"$in": phones}}, {"agentId": {"$in": phones}}]}
     if current_user.role in {ADMIN, CASHIER} and current_user.shopId:
         return {"shop_id": current_user.shopId}
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No shop scope assigned")
@@ -39,8 +64,9 @@ async def branch_scope_filter(db: AsyncIOMotorDatabase, current_user: UserInDB) 
     """Return the mandatory ShopBranch query filter for this staff member."""
     if current_user.role == SYSTEM:
         return {}
-    if current_user.role == AGENT:
-        shops = await db.shops.find({"agentId": current_user.phone}, {"shop_id": 1}).to_list(length=None)
+    if current_user.role in {AGENT, SUBAGENT}:
+        shop_scope = await shop_scope_filter(db, current_user)
+        shops = await db.shops.find(shop_scope, {"shop_id": 1}).to_list(length=None)
         return {"shopId": {"$in": [shop["shop_id"] for shop in shops]}}
     if current_user.role == ADMIN and current_user.shopId:
         return {"shopId": current_user.shopId}
@@ -56,10 +82,10 @@ async def staff_scope_filter(db: AsyncIOMotorDatabase, current_user: UserInDB) -
     they are not shop-hierarchy staff and have no shop assignment in the MVP.
     """
     if current_user.role == SYSTEM:
-        return {"role": {"$in": list(HIERARCHY_STAFF_ROLES)}}
-    if current_user.role == AGENT:
-        shops = await db.shops.find({"agentId": current_user.phone}, {"shop_id": 1}).to_list(length=None)
-        return {"shopId": {"$in": [shop["shop_id"] for shop in shops]}, "role": {"$in": [ADMIN, CASHIER]}}
+        return {"role": {"$in": [AGENT, SUBAGENT, ADMIN, CASHIER]}}
+    if current_user.role in {AGENT, SUBAGENT}:
+        phones = await descendant_staff_phones(db, current_user)
+        return {"phone": {"$in": phones}, "role": {"$in": [SUBAGENT, ADMIN, CASHIER]}}
     if current_user.role == ADMIN and current_user.shopId:
         return {"shopId": current_user.shopId, "role": CASHIER}
     if current_user.role == CASHIER:
@@ -72,6 +98,8 @@ async def get_scoped_shop(db: AsyncIOMotorDatabase, current_user: UserInDB, shop
     shop = await db.shops.find_one({**scope, "shop_id": shop_id})
     if shop is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+    shop.setdefault("representativePhone", shop.get("agentId"))
+    shop.setdefault("representativeRole", "agent")
     return shop
 
 
@@ -100,6 +128,7 @@ async def validate_staff_creation(
     role: str,
     shop_id: str | None,
     branch_id: str | None,
+    parent_cut_percent: float | None = None,
 ) -> None:
     """Validate reporting-line and shop/branch constraints before staff creation."""
     if role == AGENT:
@@ -108,13 +137,19 @@ async def validate_staff_creation(
             raise HTTPException(status_code=422, detail="Agents must not be single-shop or branch scoped")
         return
 
-    if role not in {ADMIN, CASHIER}:
-        raise HTTPException(status_code=422, detail="Only agent, admin, and cashier staff roles can be created here")
-    if not shop_id:
-        raise HTTPException(status_code=422, detail="Admin and cashier staff require shopId")
-    shop = await get_scoped_shop(db, current_user, shop_id)
+    if role == SUBAGENT:
+        if current_user.role not in {SYSTEM, AGENT}:
+            raise HTTPException(status_code=403, detail="Only system or agents may create subagents")
+        if shop_id is not None or branch_id is not None:
+            raise HTTPException(status_code=422, detail="Subagents must not be single-shop or branch scoped")
+        if current_user.role == AGENT and parent_cut_percent is None:
+            raise HTTPException(status_code=422, detail="Subagents require a parent cut percentage")
+        return
 
-    if current_user.role not in {SYSTEM, AGENT, ADMIN}:
+    if role not in {ADMIN, CASHIER}:
+        raise HTTPException(status_code=422, detail="Only agent, subagent, admin, and cashier staff roles can be created here")
+
+    if current_user.role not in {SYSTEM, AGENT, SUBAGENT, ADMIN}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to create staff")
     if current_user.role == ADMIN and role != CASHIER:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admins may create cashiers only")
@@ -122,11 +157,15 @@ async def validate_staff_creation(
     if role == ADMIN:
         if branch_id is not None:
             raise HTTPException(status_code=422, detail="Admins must not be branch scoped")
-        existing_admin = await db.users.find_one({"role": ADMIN, "shopId": shop["shop_id"]})
-        if existing_admin is not None:
-            raise HTTPException(status_code=409, detail="This shop already has an admin")
+        if current_user.role in {AGENT, SUBAGENT} and parent_cut_percent is None:
+            raise HTTPException(status_code=422, detail="Admins require a parent cut percentage")
+        if shop_id:
+            await get_scoped_shop(db, current_user, shop_id)
         return
 
+    if not shop_id:
+        raise HTTPException(status_code=422, detail="Cashiers require shopId")
+    shop = await get_scoped_shop(db, current_user, shop_id)
     if not branch_id:
         raise HTTPException(status_code=422, detail="Cashiers require branchId")
     branch = await db.shopBranches.find_one({"branch_id": branch_id, "shopId": shop["shop_id"]})

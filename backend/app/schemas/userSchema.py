@@ -3,7 +3,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 
-UserRole = Literal["system", "agent", "admin", "cashier", "employee", "user"]
+UserRole = Literal["system", "agent", "subagent", "admin", "cashier", "employee", "user"]
 
 class UserSchema(BaseModel):
     phone: str
@@ -13,6 +13,8 @@ class UserSchema(BaseModel):
     branchId: Optional[str] = None
     agentId: Optional[str] = None
     agentPercent: float = 0.0
+    parentPhone: Optional[str] = None
+    parentCutPercent: float = 0.0
     adminId: Optional[str] = None
     adminPercent: float = 0.0
     isActive: bool = True
@@ -40,6 +42,8 @@ class UserUpdate(BaseModel):
     phone: Optional[str] = None
     agentId: Optional[str] = None
     agentPercent: Optional[float] = None
+    parentPhone: Optional[str] = None
+    parentCutPercent: Optional[float] = None
     adminId: Optional[str] = None
     adminPercent: Optional[float] = None
     isActive: Optional[bool] = None

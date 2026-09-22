@@ -26,7 +26,7 @@ async def authenticate_user(users_collection: AsyncIOMotorCollection, phone:str,
     user = await get_user_by_phone(users_collection,phone)
     if not user:
         return None
-    if(user.role != "system" and user.role != "agent" and user.role != "admin" and user.role != "cashier" and user.role != "employee"):
+    if(user.role != "system" and user.role != "agent" and user.role != "subagent" and user.role != "admin" and user.role != "cashier" and user.role != "employee"):
         return None
     if not verify_password(password,user.password):
         return None

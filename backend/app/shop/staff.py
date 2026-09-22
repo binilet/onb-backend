@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from schemas.userSchema import UserSchema
 
@@ -10,9 +10,10 @@ class StaffUserCreate(BaseModel):
     phone: str
     username: str
     password: str
-    role: Literal["agent", "admin", "cashier"]
+    role: Literal["agent", "subagent", "admin", "cashier"]
     shopId: Optional[str] = None
     branchId: Optional[str] = None
+    parentCutPercent: Optional[float] = Field(default=None, gt=0)
 
     @field_validator("password")
     @classmethod
@@ -31,6 +32,9 @@ class StaffUserUpdate(BaseModel):
     isActive: Optional[bool] = None
     banUntil: Optional[datetime] = None
     branchId: Optional[str] = None
+    shopId: Optional[str] = None
+    role: Optional[Literal["agent", "subagent", "admin", "cashier"]] = None
+    parentCutPercent: Optional[float] = Field(default=None, gt=0)
 
     @field_validator("password")
     @classmethod
