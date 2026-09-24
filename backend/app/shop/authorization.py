@@ -16,6 +16,24 @@ CASHIER = "cashier"
 HIERARCHY_STAFF_ROLES = frozenset({SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER})
 
 
+def validate_assigned_cut(current_user: UserInDB, role: str, cut_percent: float | None) -> None:
+    """Validate the direct parent's cut assignment without relying on the UI."""
+    if current_user.role == ADMIN and role == CASHIER:
+        if cut_percent not in (None, 100):
+            raise HTTPException(status_code=422, detail="Admin-to-cashier transfers are always 1:1 (100%)")
+        return
+    # System has no assigned parent cut, so it is the root of the hierarchy.
+    if current_user.role == SYSTEM:
+        return
+    if current_user.role not in {AGENT, SUBAGENT}:
+        return
+    if cut_percent is None:
+        raise HTTPException(status_code=422, detail="A cut percentage is required for this staff assignment")
+    parent_cut = float(current_user.parentCutPercent or 0)
+    if cut_percent < parent_cut:
+        raise HTTPException(status_code=422, detail="Assigned cut percentage cannot be lower than the assigner's cut percentage")
+
+
 async def descendant_staff_phones(db: AsyncIOMotorDatabase, current_user: UserInDB) -> list[str]:
     """Return all direct and indirect staff descendants, including legacy reporting fields."""
     discovered: set[str] = set()
@@ -28,7 +46,7 @@ async def descendant_staff_phones(db: AsyncIOMotorDatabase, current_user: UserIn
                 {"parentPhone": {"$in": parents}},
                 {"agentId": {"$in": parents}},
                 {"adminId": {"$in": parents}},
-            ], "role": {"$in": list(HIERARCHY_STAFF_ROLES - {SYSTEM})}},
+            ], "forShop": True},
             {"phone": 1},
         ).to_list(length=None)
         for document in documents:
@@ -82,14 +100,14 @@ async def staff_scope_filter(db: AsyncIOMotorDatabase, current_user: UserInDB) -
     they are not shop-hierarchy staff and have no shop assignment in the MVP.
     """
     if current_user.role == SYSTEM:
-        return {"role": {"$in": [AGENT, SUBAGENT, ADMIN, CASHIER]}}
+        return {"forShop": True}
     if current_user.role in {AGENT, SUBAGENT}:
         phones = await descendant_staff_phones(db, current_user)
-        return {"phone": {"$in": phones}, "role": {"$in": [SUBAGENT, ADMIN, CASHIER]}}
+        return {"phone": {"$in": phones}, "forShop": True}
     if current_user.role == ADMIN and current_user.shopId:
-        return {"shopId": current_user.shopId, "role": CASHIER}
+        return {"shopId": current_user.shopId, "forShop": True}
     if current_user.role == CASHIER:
-        return {"phone": current_user.phone}
+        return {"phone": current_user.phone, "forShop": True}
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No staff scope assigned")
 
 
@@ -113,7 +131,7 @@ async def get_scoped_branch(db: AsyncIOMotorDatabase, current_user: UserInDB, br
 
 async def get_scoped_staff_user(db: AsyncIOMotorDatabase, current_user: UserInDB, phone: str) -> dict:
     if current_user.role == SYSTEM:
-        user = await db.users.find_one({"phone": phone})
+        user = await db.users.find_one({"phone": phone, "forShop": True})
     else:
         scope = await staff_scope_filter(db, current_user)
         user = await db.users.find_one({**scope, "phone": phone})
@@ -135,6 +153,7 @@ async def validate_staff_creation(
         require_system(current_user)
         if shop_id is not None or branch_id is not None:
             raise HTTPException(status_code=422, detail="Agents must not be single-shop or branch scoped")
+        validate_assigned_cut(current_user, role, parent_cut_percent)
         return
 
     if role == SUBAGENT:
@@ -142,8 +161,7 @@ async def validate_staff_creation(
             raise HTTPException(status_code=403, detail="Only system or agents may create subagents")
         if shop_id is not None or branch_id is not None:
             raise HTTPException(status_code=422, detail="Subagents must not be single-shop or branch scoped")
-        if current_user.role == AGENT and parent_cut_percent is None:
-            raise HTTPException(status_code=422, detail="Subagents require a parent cut percentage")
+        validate_assigned_cut(current_user, role, parent_cut_percent)
         return
 
     if role not in {ADMIN, CASHIER}:
@@ -157,10 +175,9 @@ async def validate_staff_creation(
     if role == ADMIN:
         if branch_id is not None:
             raise HTTPException(status_code=422, detail="Admins must not be branch scoped")
-        if current_user.role in {AGENT, SUBAGENT} and parent_cut_percent is None:
-            raise HTTPException(status_code=422, detail="Admins require a parent cut percentage")
         if shop_id:
             await get_scoped_shop(db, current_user, shop_id)
+        validate_assigned_cut(current_user, role, parent_cut_percent)
         return
 
     if not shop_id:
@@ -171,3 +188,4 @@ async def validate_staff_creation(
     branch = await db.shopBranches.find_one({"branch_id": branch_id, "shopId": shop["shop_id"]})
     if branch is None:
         raise HTTPException(status_code=422, detail="branchId must belong to shopId")
+    validate_assigned_cut(current_user, role, parent_cut_percent)

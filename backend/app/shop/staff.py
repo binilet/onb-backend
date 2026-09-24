@@ -14,6 +14,10 @@ class StaffUserCreate(BaseModel):
     shopId: Optional[str] = None
     branchId: Optional[str] = None
     parentCutPercent: Optional[float] = Field(default=None, gt=0)
+    # Shop-created staff start in a usable, verified shop staff state.
+    isActive: bool = True
+    verified: bool = True
+    forShop: bool = True
 
     @field_validator("password")
     @classmethod
@@ -35,6 +39,7 @@ class StaffUserUpdate(BaseModel):
     shopId: Optional[str] = None
     role: Optional[Literal["agent", "subagent", "admin", "cashier"]] = None
     parentCutPercent: Optional[float] = Field(default=None, gt=0)
+    forShop: Optional[bool] = None
 
     @field_validator("password")
     @classmethod

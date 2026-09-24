@@ -18,6 +18,7 @@ def utc_now() -> datetime:
 class ShopGameCreate(BaseModel):
     shopId: str
     branchId: str
+    gameName: str = Field(min_length=2, max_length=100)
     pattern: Optional[str] = None
     dynamicPattern: Optional[str] = None
     betAmount: Decimal = Field(gt=0)
@@ -37,6 +38,7 @@ class ShopGameCreate(BaseModel):
 
 
 class ShopGameUpdate(BaseModel):
+    gameName: Optional[str] = Field(default=None, min_length=2, max_length=100)
     pattern: Optional[str] = None
     dynamicPattern: Optional[str] = None
     betAmount: Optional[Decimal] = Field(default=None, gt=0)
@@ -51,6 +53,7 @@ class ShopGame(BaseModel):
     game_id: str = Field(default_factory=lambda: str(uuid4()))
     shopId: str
     branchId: str
+    gameName: str
     pattern: Optional[str] = None
     dynamicPattern: Optional[str] = None
     betAmount: Decimal

@@ -1,4 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException,Query
+from datetime import datetime
+from typing import Optional
 from fastapi.responses import JSONResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from bson import ObjectId
@@ -17,6 +19,7 @@ from shop.authorization import (
     get_scoped_staff_user,
     require_roles,
     staff_scope_filter,
+    validate_assigned_cut,
 )
 from shop.audit import write_action_log
 
@@ -93,12 +96,19 @@ async def update_user_details(
             if branch is None:
                 raise HTTPException(status_code=422, detail="The selected branch does not belong to the selected shop")
         update_data["parentPhone"] = None if requested_role == AGENT else current_user.phone
-        update_data["parentCutPercent"] = 100 if requested_role == CASHIER else 0
         if requested_role in {AGENT, SUBAGENT, "user", "employee"}:
             update_data.update({"shopId": None, "branchId": None, "adminId": None})
         elif requested_role == ADMIN:
             update_data.update({"branchId": None, "adminId": None})
         update_data["agentId"] = None
+        if requested_role in {AGENT, SUBAGENT, ADMIN, CASHIER}:
+            validate_assigned_cut(
+                current_user,
+                requested_role,
+                update_data.get("parentCutPercent", existing.get("parentCutPercent")),
+            )
+    elif current_user.role == SYSTEM and "parentCutPercent" in update_data:
+        validate_assigned_cut(current_user, existing.get("role", "user"), update_data["parentCutPercent"])
     user = await update_user(db.users, user_id=user_id, update_data=update_data)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -128,7 +138,7 @@ async def read_all_users(skip: int = 0,limit: int = 1000,
 
 @router.get("/all_users_by_role", response_model=list[UserWithBalance])
 async def read_all_users_by_role(
-    role:str,skip: int = 0,limit: int = 1000,
+    role:str, skip: int = 0, limit: int = 100, startAt: Optional[datetime] = None, endAt: Optional[datetime] = None, phone: Optional[str] = None,
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
@@ -138,7 +148,7 @@ async def read_all_users_by_role(
     #         status_code=403,
     #         detail="Scoped staff reads are available at /api/shop/staff; player balance reports are outside staff scope",
     #     )
-    return await get_users_by_role(db.users, db.creditbalances, current_user, role=role, skip=skip, limit=limit)
+    return await get_users_by_role(db.users, db.creditbalances, current_user, role=role, skip=skip, limit=limit, start_at=startAt, end_at=endAt, phone=phone)
     
 @router.get("/generate-referral")
 def generate_referral(phone:str=Query(...)):

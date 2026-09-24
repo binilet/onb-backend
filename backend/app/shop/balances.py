@@ -14,6 +14,8 @@ LedgerReason = Literal[
     "AGENT_TO_SUBAGENT_TRANSFER",
     "AGENT_TO_ADMIN_TRANSFER",
     "SUBAGENT_TO_ADMIN_TRANSFER",
+    "AGENT_TO_CASHIER_TRANSFER",
+    "SUBAGENT_TO_CASHIER_TRANSFER",
     "ADMIN_TO_CASHIER_TRANSFER",
     "GAME_START_CUT",
     "GAME_START_CUT_REFUND",
@@ -41,7 +43,7 @@ class ShopBalanceLedger(BaseModel):
     amountPoints: Decimal = Field(gt=0)
     sourceAmountPoints: Optional[Decimal] = Field(default=None, gt=0)
     etbAmount: Optional[Decimal] = None
-    systemCutPercentApplied: Optional[Decimal] = None
+    cutPercentApplied: Optional[Decimal] = None
     gameId: Optional[str] = None
     shopId: Optional[str] = None
     branchId: Optional[str] = None
@@ -54,6 +56,5 @@ class ShopBalanceLedger(BaseModel):
 class BalanceTransferRequest(BaseModel):
     toPhone: str
     idempotencyKey: str = Field(min_length=1)
-    shopId: Optional[str] = None
     etbAmount: Optional[Decimal] = Field(default=None, gt=0)
     amountPoints: Optional[Decimal] = Field(default=None, gt=0)

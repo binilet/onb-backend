@@ -19,6 +19,7 @@ class UserSchema(BaseModel):
     adminPercent: float = 0.0
     isActive: bool = True
     verified: bool = False
+    forShop: bool = False
     verification_txt_count: int = 0
     banUntil: Optional[datetime] = None
     pwd_change_count: int = 0
@@ -49,6 +50,7 @@ class UserUpdate(BaseModel):
     isActive: Optional[bool] = None
     banUntil: Optional[datetime] = None
     verified: Optional[bool] = None
+    forShop: Optional[bool] = None
     
 
 

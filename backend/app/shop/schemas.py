@@ -12,7 +12,6 @@ def utc_now() -> datetime:
 class ShopCreate(BaseModel):
     representativePhone: str
     shopName: str
-    systemCutPercent: float = Field(gt=0)
     address: str
     isActive: bool = True
     banUntil: Optional[datetime] = None
@@ -21,7 +20,6 @@ class ShopCreate(BaseModel):
 class ShopUpdate(BaseModel):
     representativePhone: Optional[str] = None
     shopName: Optional[str] = None
-    systemCutPercent: Optional[float] = Field(default=None, gt=0)
     address: Optional[str] = None
     isActive: Optional[bool] = None
     banUntil: Optional[datetime] = None
@@ -33,7 +31,6 @@ class Shop(BaseModel):
     representativeRole: str
     agentId: Optional[str] = None
     shopName: str
-    systemCutPercent: float
     address: str
     isActive: bool = True
     banUntil: Optional[datetime] = None

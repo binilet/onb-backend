@@ -25,6 +25,7 @@ from shop.authorization import (
     get_scoped_staff_user,
     require_roles,
     staff_scope_filter,
+    validate_assigned_cut,
     validate_staff_creation,
 )
 from shop.schemas import (
@@ -53,6 +54,8 @@ from core.security import get_password_hash
 from shop.balances import BalanceTransferRequest, ShopBalance, ShopBalanceLedger
 from shop.balance_service import get_scoped_balance, list_scoped_ledgers, transfer_balance
 from shop.player_room_wallets import PlayerRoomTopUpRequest, PlayerRoomWallet, PlayerRoomWalletLedger
+from shop.player_room_deposits import PlayerRoomDeposit, PlayerRoomDepositDecision, decide_player_room_deposit, list_player_room_deposits
+from shop.player_room_withdrawals import PlayerRoomWithdrawal, list_withdrawals, receiver_confirm
 from shop.player_room_wallet_service import (
     get_own_player_room_wallet,
     get_scoped_player_room_wallet,
@@ -221,7 +224,8 @@ async def create_staff_endpoint(
     if user_data.get("parentCutPercent") is None:
         user_data.pop("parentCutPercent", None)
     user_data["parentPhone"] = None if payload.role == AGENT else current_user.phone
-    if payload.role == CASHIER:
+    user_data.update({"isActive": True, "verified": True, "forShop": True})
+    if payload.role == CASHIER and current_user.role == ADMIN:
         user_data["parentCutPercent"] = 100
     user_data["agentId"] = current_user.phone if current_user.role == AGENT else current_user.agentId
     user_data["adminId"] = current_user.phone if current_user.role == ADMIN else None
@@ -299,6 +303,9 @@ async def update_staff_endpoint(
         target_shop_id = changes.get("shopId", staff.get("shopId"))
         target_branch_id = changes.get("branchId", staff.get("branchId"))
         target_cut = changes.get("parentCutPercent", staff.get("parentCutPercent"))
+        if changes["role"] == CASHIER and current_user.role == ADMIN:
+            target_cut = 100
+            changes["parentCutPercent"] = 100
         if changes["role"] in {AGENT, SUBAGENT}:
             target_shop_id = None
             target_branch_id = None
@@ -328,7 +335,7 @@ async def update_staff_endpoint(
         elif changes["role"] == ADMIN:
             changes["branchId"] = None
             changes["adminId"] = None
-        elif changes["role"] == CASHIER:
+        elif changes["role"] == CASHIER and current_user.role == ADMIN:
             changes["parentCutPercent"] = 100
 
     if "username" in changes and changes["username"] != staff["username"]:
@@ -348,12 +355,12 @@ async def update_staff_endpoint(
         if branch is None:
             raise HTTPException(status_code=422, detail="branchId must belong to the cashier shop")
     if "parentCutPercent" in changes:
-        if changes.get("role", staff.get("role")) == CASHIER:
+        if effective_role == CASHIER and current_user.role == ADMIN:
             changes["parentCutPercent"] = 100
         elif staff.get("parentPhone") != current_user.phone and current_user.role != SYSTEM:
             raise HTTPException(status_code=403, detail="Only the direct parent may change this cut percentage")
-        elif effective_role not in {SUBAGENT, ADMIN}:
-            raise HTTPException(status_code=422, detail="Cut percentages apply only to subagents and admins")
+        else:
+            validate_assigned_cut(current_user, effective_role, changes["parentCutPercent"])
     if "password" in changes:
         changes["password"] = get_password_hash(changes["password"])
         changes["mustChangePassword"] = True
@@ -372,7 +379,7 @@ async def transfer_balance_endpoint(
 ):
     require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN)
     ledger = await transfer_balance(db, current_user, payload)
-    await write_action_log(db, current_user, "CREATE", "SHOP_BALANCE_TRANSFER", ledger.ledger_id, shop_id=payload.shopId or current_user.shopId, detail={"toPhone": ledger.toPhone, "amountPoints": str(ledger.amountPoints), "reason": ledger.reason})
+    await write_action_log(db, current_user, "CREATE", "SHOP_BALANCE_TRANSFER", ledger.ledger_id, detail={"toPhone": ledger.toPhone, "amountPoints": str(ledger.amountPoints), "reason": ledger.reason})
     return ledger
 
 
@@ -400,15 +407,23 @@ async def list_balance_ledgers_endpoint(
     return await list_scoped_ledgers(db, current_user, startAt, endAt, phone)
 
 
-@router.post("/player-room-wallets/topups", response_model=PlayerRoomWalletLedger, status_code=status.HTTP_201_CREATED)
-async def top_up_player_room_wallet_endpoint(
-    payload: PlayerRoomTopUpRequest,
-    current_user: UserInDB = Depends(get_current_active_user),
-    db: AsyncIOMotorDatabase = Depends(get_db),
-):
-    ledger = await top_up_player_room_wallet(db, current_user, payload)
-    await write_action_log(db, current_user, "CREATE", "PLAYER_ROOM_TOPUP", ledger.ledger_id, shop_id=payload.shopId, branch_id=payload.branchId, detail={"playerPhone": payload.playerPhone, "amount": str(payload.amount)})
-    return ledger
+@router.get("/player-room-deposits", response_model=list[PlayerRoomDeposit])
+async def list_player_room_deposits_endpoint(status: str = "PENDING", depositMethod: Optional[str] = None, startAt: Optional[datetime] = None, endAt: Optional[datetime] = None, current_user: UserInDB = Depends(get_current_active_user), db: AsyncIOMotorDatabase = Depends(get_db)):
+    return await list_player_room_deposits(db, current_user, status, depositMethod, startAt, endAt)
+
+@router.patch("/player-room-deposits/{deposit_id}", response_model=PlayerRoomDeposit)
+async def decide_player_room_deposit_endpoint(deposit_id: str, payload: PlayerRoomDepositDecision, current_user: UserInDB = Depends(get_current_active_user), db: AsyncIOMotorDatabase = Depends(get_db)):
+    deposit = await decide_player_room_deposit(db, current_user, deposit_id, payload)
+    await write_action_log(db, current_user, "UPDATE", "PLAYER_ROOM_DEPOSIT", deposit_id, shop_id=deposit.shopId, branch_id=deposit.branchId, detail={"action": payload.action, "playerPhone": deposit.playerPhone, "amount": str(deposit.amount)})
+    return deposit
+
+@router.get("/player-room-withdrawals", response_model=list[PlayerRoomWithdrawal])
+async def list_player_room_withdrawals_endpoint(status: str = "PENDING", startAt: Optional[datetime] = None, endAt: Optional[datetime] = None, current_user: UserInDB = Depends(get_current_active_user), db: AsyncIOMotorDatabase = Depends(get_db)):
+    return await list_withdrawals(db, current_user, status, startAt, endAt)
+
+@router.patch("/player-room-withdrawals/{withdrawal_id}/disburse", response_model=PlayerRoomWithdrawal)
+async def disburse_player_room_withdrawal_endpoint(withdrawal_id: str, current_user: UserInDB = Depends(get_current_active_user), db: AsyncIOMotorDatabase = Depends(get_db)):
+    return await receiver_confirm(db, current_user, withdrawal_id)
 
 
 @router.get("/player-room-wallets/me", response_model=PlayerRoomWallet)
@@ -423,11 +438,13 @@ async def get_my_player_room_wallet_endpoint(
 
 @router.get("/player-room-wallets", response_model=list[PlayerRoomWallet])
 async def list_player_room_wallets_endpoint(
+    phone: Optional[str] = None,
+    limit: int = 100,
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
     require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
-    return await list_scoped_player_room_wallets(db, current_user)
+    return await list_scoped_player_room_wallets(db, current_user, phone, limit)
 
 
 @router.get("/player-room-wallets/{player_phone}", response_model=PlayerRoomWallet)

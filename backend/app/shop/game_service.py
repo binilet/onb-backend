@@ -13,6 +13,7 @@ from shop.games import GameLifecycleRequest, GameParticipant, ShopGame, ShopGame
 
 def _game_from_document(document: dict) -> ShopGame:
     document = document.copy()
+    document.setdefault("gameName", f"Game {str(document.get('game_id', ''))[:8].upper()}")
     for field in ("betAmount", "totalWinning", "totalCutPercent", "totalCutAmount", "cutPercentApplied"):
         if document.get(field) is not None and isinstance(document[field], Decimal128):
             document[field] = document[field].to_decimal()
@@ -100,6 +101,7 @@ async def update_shop_game(
     validation_payload = ShopGameCreate(
         shopId=candidate["shopId"],
         branchId=candidate["branchId"],
+        gameName=candidate["gameName"],
         pattern=candidate["pattern"],
         dynamicPattern=candidate["dynamicPattern"],
         betAmount=candidate["betAmount"],
@@ -173,7 +175,9 @@ async def apply_game_lifecycle_action(db: AsyncIOMotorDatabase, current_user: Us
             )
         gross_amount = game.betAmount * Decimal(cartela_count)
         cut_amount = (gross_amount * game.totalCutPercent / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        total_winning = gross_amount - cut_amount
+        # An entered totalWinning is a fixed, guaranteed pool. When it is
+        # omitted, lock the dynamic pool from actual cartela sales at start.
+        total_winning = game.totalWinning if game.totalWinning is not None else gross_amount - cut_amount
         if cut_amount <= 0 or total_winning <= 0:
             raise HTTPException(status_code=422, detail="The calculated cut and winning pool must both be positive")
         starts_at = datetime.now(timezone.utc) + timedelta(seconds=20)
@@ -210,7 +214,7 @@ async def apply_game_lifecycle_action(db: AsyncIOMotorDatabase, current_user: Us
                         "toPhone": None,
                         "amountPoints": Decimal128(cut_amount),
                         "sourceAmountPoints": Decimal128(cut_amount),
-                        "systemCutPercentApplied": Decimal128(game.totalCutPercent),
+                        "cutPercentApplied": Decimal128(game.totalCutPercent),
                         "reason": "GAME_START_CUT",
                         "idempotencyKey": idempotency_key,
                         "gameId": game_id,
@@ -231,7 +235,7 @@ async def apply_game_lifecycle_action(db: AsyncIOMotorDatabase, current_user: Us
                     "cutDebitedFromPhone": game.createdByPhone,
                     "cutLedgerId": ledger_id,
                     "financialStatus": "CUT_DEBITED",
-                    "note": _system_note(game.note, f"Game start locked by {current_user.phone}; {cut_amount} points debited from creator {game.createdByPhone}; countdown ends at {starts_at.isoformat()}"),
+                    "note": _system_note(game.note, f"Game start locked by {current_user.phone}; final prize pool set; countdown ends at {starts_at.isoformat()}"),
                     "updatedAt": now,
                 }
                 result = await db.games.update_one(

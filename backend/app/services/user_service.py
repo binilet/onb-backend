@@ -8,6 +8,7 @@ from models.user import UserInDB,UserWithBalance
 from schemas.userSchema import UserSchema
 from core.security import get_password_hash, verify_password
 import base64
+import re
 
 async def get_user(users_collection: AsyncIOMotorCollection, user_id: str) -> Optional[UserInDB]:
     user = await users_collection.find_one({"_id": ObjectId(user_id)})
@@ -69,7 +70,10 @@ async def get_users_by_role(
     current_user: UserInDB,
     role: str,
     skip: int = 0,
-    limit: int = 10
+    limit: int = 10,
+    start_at: Optional[datetime] = None,
+    end_at: Optional[datetime] = None,
+    phone: Optional[str] = None,
 ) -> list[UserWithBalance]:
     # Determine filter based on role
     if current_user.role == "system":
@@ -133,6 +137,19 @@ async def get_users_by_role(
     else:
         match_stage = {"$match": query}
 
+    # A phone lookup is intentionally independent of the date range.  It is
+    # used to find an existing account even when it was created before the
+    # default "today" window.
+    filters = [match_stage["$match"]]
+    if phone:
+        filters.append({"phone": {"$regex": re.escape(phone.strip()), "$options": "i"}})
+    elif start_at or end_at:
+        created_filter = {}
+        if start_at: created_filter["$gte"] = start_at
+        if end_at: created_filter["$lt"] = end_at
+        filters.append({"createdAt": created_filter})
+    match_stage = {"$match": filters[0] if len(filters) == 1 else {"$and": filters}}
+
     # Build the aggregation pipeline with $lookup for credit balances
     pipeline = [
         match_stage,
@@ -160,8 +177,8 @@ async def get_users_by_role(
         # Sort by current_balance descending (server-side)
         {"$sort": {"current_balance": -1}},
         # Pagination
-        {"$skip": skip}
-        # {"$limit": limit}
+        {"$skip": skip},
+        {"$limit": limit}
     ]
 
     results = await users_collection.aggregate(pipeline).to_list()

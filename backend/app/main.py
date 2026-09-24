@@ -16,6 +16,12 @@ client = get_client()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     #on startup
+    # Preserve existing Shop staff when introducing explicit shop membership.
+    # New legacy accounts default to ``forShop: false`` and are never changed here.
+    await db.users.update_many(
+        {"forShop": {"$exists": False}, "role": {"$in": ["agent", "subagent", "admin", "cashier"]}},
+        {"$set": {"forShop": True}},
+    )
     deposit_task  = asyncio.create_task(watch_deposit_inserts(db,client))
     auto_dist_task = asyncio.create_task(periodic_auto_distribute(db_client=client,interval_seconds=settings.AUTO_DISTRIBUTE_INTERVAL_SECONDS))
     yield

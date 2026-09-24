@@ -12,11 +12,11 @@ from shop.authorization import ADMIN, AGENT, CASHIER, SUBAGENT, SYSTEM, get_scop
 from shop.balances import BalanceTransferRequest, ShopBalance, ShopBalanceLedger
 
 
-def convert_etb_to_points(etb_amount: Decimal, system_cut_percent: Decimal) -> Decimal:
-    """The sole ETB-to-points conversion used by the shop hierarchy."""
-    if system_cut_percent <= 0:
-        raise ValueError("systemCutPercent must be greater than zero")
-    return etb_amount * (Decimal("100") / system_cut_percent)
+def convert_to_points(source_amount: Decimal, recipient_cut_percent: Decimal) -> Decimal:
+    """Convert a sender amount using the recipient's assigned staff cut."""
+    if recipient_cut_percent <= 0:
+        raise ValueError("Recipient cut percentage must be greater than zero")
+    return source_amount * (Decimal("100") / recipient_cut_percent)
 
 
 def _decimal(value: Decimal | Decimal128 | int | float | str) -> Decimal:
@@ -34,8 +34,11 @@ def _ledger_from_document(document: dict) -> ShopBalanceLedger:
     document["amountPoints"] = _decimal(document["amountPoints"])
     if document.get("etbAmount") is not None:
         document["etbAmount"] = _decimal(document["etbAmount"])
-    if document.get("systemCutPercentApplied") is not None:
-        document["systemCutPercentApplied"] = _decimal(document["systemCutPercentApplied"])
+    # Read historical ledger records written before the staff-cut migration.
+    if document.get("cutPercentApplied") is None and document.get("systemCutPercentApplied") is not None:
+        document["cutPercentApplied"] = document["systemCutPercentApplied"]
+    if document.get("cutPercentApplied") is not None:
+        document["cutPercentApplied"] = _decimal(document["cutPercentApplied"])
     if document.get("sourceAmountPoints") is not None:
         document["sourceAmountPoints"] = _decimal(document["sourceAmountPoints"])
     return ShopBalanceLedger(**document)
@@ -58,32 +61,29 @@ async def _transfer_details(
 
     if current_user.role == SYSTEM:
         recipient_role = recipient.get("role")
-        if recipient_role not in {AGENT, SUBAGENT, ADMIN}:
-            raise HTTPException(status_code=403, detail="System transfers must target the selected Shop representative")
-        if not request.shopId or request.etbAmount is None or request.amountPoints is not None:
-            raise HTTPException(status_code=422, detail="System grants require shopId and etbAmount only")
-        shop_query = {"shop_id": request.shopId, "$or": [{"representativePhone": request.toPhone}, {"agentId": request.toPhone}]}
-        shop = await db.shops.find_one(shop_query)
-        if shop is None:
-            raise HTTPException(status_code=403, detail="The recipient is not the selected Shop representative")
-        cut_percent = _decimal(shop["systemCutPercent"])
+        if recipient_role not in {AGENT, SUBAGENT, ADMIN, CASHIER}:
+            raise HTTPException(status_code=403, detail="System transfers must target a Shop staff account")
+        if request.etbAmount is None or request.amountPoints is not None:
+            raise HTTPException(status_code=422, detail="System grants require an ETB amount only")
+        cut_percent = _decimal(recipient.get("parentCutPercent") or 0)
         try:
-            points = convert_etb_to_points(request.etbAmount, cut_percent)
+            points = convert_to_points(request.etbAmount, cut_percent)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         reason_by_role = {
             AGENT: "SYSTEM_TO_AGENT_GRANT",
             SUBAGENT: "SYSTEM_TO_SUBAGENT_GRANT",
             ADMIN: "SYSTEM_TO_ADMIN_GRANT",
+            CASHIER: "SYSTEM_TO_CASHIER_GRANT",
         }
         return None, points, None, request.etbAmount, cut_percent, reason_by_role[recipient_role]
 
     if current_user.role in {AGENT, SUBAGENT}:
-        allowed_roles = {SUBAGENT, ADMIN} if current_user.role == AGENT else {ADMIN}
+        allowed_roles = {SUBAGENT, ADMIN, CASHIER} if current_user.role == AGENT else {ADMIN, CASHIER}
         direct_parent = recipient.get("parentPhone") or recipient.get("agentId")
         if recipient.get("role") not in allowed_roles or direct_parent != current_user.phone:
             raise HTTPException(status_code=403, detail="Recipient is outside the direct staff hierarchy")
-        if request.amountPoints is None or request.etbAmount is not None or request.shopId is not None:
+        if request.amountPoints is None or request.etbAmount is not None:
             raise HTTPException(status_code=422, detail="Hierarchy transfers require amountPoints only")
         cut_percent = _decimal(
             recipient.get("parentCutPercent")
@@ -92,21 +92,23 @@ async def _transfer_details(
             or 0
         )
         try:
-            credited_points = convert_etb_to_points(request.amountPoints, cut_percent)
+            credited_points = convert_to_points(request.amountPoints, cut_percent)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="Recipient parent cut percentage is not configured") from exc
-        reason = "AGENT_TO_SUBAGENT_TRANSFER" if recipient.get("role") == SUBAGENT else (
-            "AGENT_TO_ADMIN_TRANSFER" if current_user.role == AGENT else "SUBAGENT_TO_ADMIN_TRANSFER"
+        reason = (
+            "AGENT_TO_SUBAGENT_TRANSFER" if recipient.get("role") == SUBAGENT else
+            "AGENT_TO_ADMIN_TRANSFER" if recipient.get("role") == ADMIN and current_user.role == AGENT else
+            "SUBAGENT_TO_ADMIN_TRANSFER" if recipient.get("role") == ADMIN else
+            "AGENT_TO_CASHIER_TRANSFER" if current_user.role == AGENT else
+            "SUBAGENT_TO_CASHIER_TRANSFER"
         )
         return current_user.phone, credited_points, request.amountPoints, None, cut_percent, reason
 
     if current_user.role == ADMIN:
         direct_parent = recipient.get("parentPhone") or recipient.get("adminId")
-        if recipient.get("role") != CASHIER or recipient.get("shopId") != current_user.shopId or direct_parent != current_user.phone:
-            raise HTTPException(status_code=403, detail="Admins may transfer to cashiers in their own shop only")
-        if not current_user.shopId:
-            raise HTTPException(status_code=403, detail="Admin has no shop scope")
-        if request.amountPoints is None or request.etbAmount is not None or request.shopId is not None:
+        if recipient.get("role") != CASHIER or direct_parent != current_user.phone:
+            raise HTTPException(status_code=403, detail="Admins may transfer to their direct cashiers only")
+        if request.amountPoints is None or request.etbAmount is not None:
             raise HTTPException(status_code=422, detail="Admin transfers require amountPoints only")
         return current_user.phone, request.amountPoints, request.amountPoints, None, Decimal("100"), "ADMIN_TO_CASHIER_TRANSFER"
 
@@ -129,7 +131,7 @@ async def transfer_balance(
             or existing_ledger.sourceAmountPoints != source_amount_points
             or existing_ledger.reason != reason
             or existing_ledger.etbAmount != etb_amount
-            or existing_ledger.systemCutPercentApplied != applied_percent
+            or existing_ledger.cutPercentApplied != applied_percent
         ):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="idempotencyKey was already used for a different transfer")
         return existing_ledger
@@ -140,7 +142,7 @@ async def transfer_balance(
         amountPoints=amount_points,
         sourceAmountPoints=source_amount_points,
         etbAmount=etb_amount,
-        systemCutPercentApplied=applied_percent,
+        cutPercentApplied=applied_percent,
         reason=reason,
         idempotencyKey=request.idempotencyKey,
     )
@@ -176,7 +178,7 @@ async def transfer_balance(
                 if etb_amount is not None:
                     ledger_document["etbAmount"] = Decimal128(etb_amount)
                 if applied_percent is not None:
-                    ledger_document["systemCutPercentApplied"] = Decimal128(applied_percent)
+                    ledger_document["cutPercentApplied"] = Decimal128(applied_percent)
                 await db.shopBalanceLedgers.insert_one(ledger_document, session=session)
     except DuplicateKeyError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="idempotencyKey is already in use") from exc

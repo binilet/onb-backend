@@ -28,12 +28,28 @@ def _wallet_ledger_from_document(document: dict) -> PlayerRoomWalletLedger:
 
 
 async def ensure_player_room_wallet_indexes(db: AsyncIOMotorDatabase) -> None:
-    await db.playerRoomWallets.create_index(
-        [("playerPhone", 1), ("shopId", 1)], unique=True, name="player_room_wallet_player_shop_unique"
+    async def ensure_index(collection, keys, *, unique: bool, name: str) -> None:
+        # Earlier MVP versions created these same indexes with different names.
+        # Mongo rejects a duplicate key pattern with a new name, so recognize an
+        # equivalent existing index before asking it to create anything.
+        existing = await collection.index_information()
+        normalized_keys = list(keys)
+        if any(details.get("key") == normalized_keys for details in existing.values()):
+            return
+        await collection.create_index(normalized_keys, unique=unique, name=name)
+
+    await ensure_index(
+        db.playerRoomWallets,
+        [("playerPhone", 1), ("shopId", 1)],
+        unique=True,
+        name="player_room_wallet_player_shop_unique",
     )
-    await db.playerRoomWalletLedgers.create_index("ledger_id", unique=True, name="player_room_wallet_ledger_id_unique")
-    await db.playerRoomWalletLedgers.create_index(
-        "idempotencyKey", unique=True, name="player_room_wallet_ledger_idempotency_unique"
+    await ensure_index(db.playerRoomWalletLedgers, [("ledger_id", 1)], unique=True, name="player_room_wallet_ledger_id_unique")
+    await ensure_index(
+        db.playerRoomWalletLedgers,
+        [("idempotencyKey", 1)],
+        unique=True,
+        name="player_room_wallet_ledger_idempotency_unique",
     )
 
 
@@ -182,7 +198,7 @@ async def list_scoped_player_room_wallet_ledgers(
 
 
 async def list_scoped_player_room_wallets(
-    db: AsyncIOMotorDatabase, current_user: UserInDB
+    db: AsyncIOMotorDatabase, current_user: UserInDB, phone: str | None = None, limit: int = 100
 ) -> list[PlayerRoomWallet]:
     if current_user.role == SYSTEM:
         scope = {}
@@ -194,5 +210,7 @@ async def list_scoped_player_room_wallets(
     else:
         raise HTTPException(status_code=403, detail="No player wallet scope assigned")
 
-    documents = await db.playerRoomWallets.find(scope).sort("updatedAt", -1).to_list(length=None)
+    if phone:
+        scope = {"$and": [scope, {"playerPhone": {"$regex": phone.strip(), "$options": "i"}}]} if scope else {"playerPhone": {"$regex": phone.strip(), "$options": "i"}}
+    documents = await db.playerRoomWallets.find(scope).sort("updatedAt", -1).limit(min(max(limit, 1), 100)).to_list(length=min(max(limit, 1), 100))
     return [_wallet_from_document(document) for document in documents]
