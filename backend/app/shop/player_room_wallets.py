@@ -6,7 +6,16 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 
-PlayerRoomWalletReason = Literal["CASHIER_TOPUP", "DEPOSIT", "GAME_STAKE", "GAME_WINNINGS", "REFUND"]
+PlayerRoomWalletReason = Literal[
+    "CASHIER_TOPUP",
+    "DEPOSIT",
+    "GAME_STAKE",
+    "GAME_WINNINGS",
+    "REFUND",
+    "WITHDRAWAL",
+    "PLAYER_TRANSFER_SENT",
+    "PLAYER_TRANSFER_RECEIVED",
+]
 
 
 def utc_now() -> datetime:
