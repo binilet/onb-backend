@@ -3,6 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 from routes import auth,user,game,deposit,withdrawls,creditBalance,addisPayDeposit,addisPayWithdaw,manualDeposit,manualWithdraw,pattern,autoGameRoute
 from shop.router import router as shop_router
+from routes.site_media import router as site_media_router, ensure_indexes as ensure_media_indexes, MediaUploadLimit
+from services.site_media import media_root, media_url_base
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from services.manual_pay import watch_deposit_inserts
 from core.winningDistribution import periodic_auto_distribute
@@ -16,6 +19,8 @@ client = get_client()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     #on startup
+    media_url_base()
+    await ensure_media_indexes(db)
     # Preserve existing Shop staff when introducing explicit shop membership.
     # New legacy accounts default to ``forShop: false`` and are never changed here.
     await db.users.update_many(
@@ -30,6 +35,11 @@ async def lifespan(app: FastAPI):
     auto_dist_task.cancel()
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(MediaUploadLimit)
+# Development preview only. Production serves this directory through nginx.
+if not settings.IS_PRODUCTION:
+    (media_root() / "site-media").mkdir(parents=True, exist_ok=True)
+    app.mount("/media/site-media", StaticFiles(directory=media_root() / "site-media"), name="site-media-files")
 
 #cors middleware
 app.add_middleware(
@@ -54,6 +64,8 @@ app.include_router(manualWithdraw.router)
 app.include_router(pattern.router)
 app.include_router(autoGameRoute.router)
 app.include_router(shop_router)
+app.include_router(site_media_router)
+app.include_router(site_media_router, prefix="/api", include_in_schema=False)
 
 
 @app.on_event("startup")

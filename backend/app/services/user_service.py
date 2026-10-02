@@ -57,6 +57,8 @@ async def get_users(users_collection: AsyncIOMotorCollection,current_user: UserI
         users_cursor = users_collection.find()#.skip(skip).limit(limit)
     elif(current_user.role == "agent"):
         users_cursor = users_collection.find({"agentId": current_user.phone})#.skip(skip).limit(limit)
+    elif(current_user.role == "subagent"):
+        users_cursor = users_collection.find({"subagentId": current_user.phone})#.skip(skip).limit(limit)
     elif(current_user.role == "admin"):
         users_cursor = users_collection.find({"adminId": current_user.phone,"role":"user"})#.skip(skip).limit(limit)
 
@@ -86,6 +88,8 @@ async def get_users_by_role(
             query = {"agentId": current_user.phone, "role": {"$in": ["user", "admin"]}}
         else:
             query = {"agentId": current_user.phone, "role": role}
+    elif current_user.role == "subagent":
+        query = {"subagentId": current_user.phone, "role": role}
     elif current_user.role == "admin":
         query = {"adminId": current_user.phone, "role": role}
     else:

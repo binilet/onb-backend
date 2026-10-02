@@ -25,6 +25,7 @@ from shop.authorization import (
     get_scoped_staff_user,
     require_roles,
     staff_scope_filter,
+    inherited_owner_assignment,
     validate_assigned_cut,
     validate_staff_creation,
 )
@@ -48,7 +49,7 @@ from shop.service import (
     update_branch,
     update_shop,
 )
-from shop.staff import StaffUserCreate, StaffUserUpdate
+from shop.staff import StaffUserCreate, StaffUserUpdate, StaffUserWithShopBalance
 from services.user_service import create_user, get_user_by_phone, get_user_by_username
 from core.security import get_password_hash
 from shop.balances import BalanceTransferRequest, ShopBalance, ShopBalanceLedger
@@ -221,20 +222,21 @@ async def create_staff_endpoint(
     if await get_user_by_username(db.users, payload.username):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already registered")
     user_data = payload.model_dump()
+    owner_phone = user_data.pop("ownerPhone", None)
     if user_data.get("parentCutPercent") is None:
         user_data.pop("parentCutPercent", None)
-    user_data["parentPhone"] = None if payload.role == AGENT else current_user.phone
+    user_data.update(
+        await inherited_owner_assignment(db, current_user, payload.role, owner_phone)
+    )
     user_data.update({"isActive": True, "verified": True, "forShop": True})
     if payload.role == CASHIER and current_user.role == ADMIN:
         user_data["parentCutPercent"] = 100
-    user_data["agentId"] = current_user.phone if current_user.role == AGENT else current_user.agentId
-    user_data["adminId"] = current_user.phone if current_user.role == ADMIN else None
     staff = await create_user(db.users, UserSchema(**user_data, mustChangePassword=True))
     await write_action_log(db, current_user, "CREATE", "STAFF", staff.phone, shop_id=staff.shopId, branch_id=staff.branchId, detail={"role": staff.role, "username": staff.username})
     return staff
 
 
-@router.get("/staff", response_model=list[UserInDB])
+@router.get("/staff", response_model=list[StaffUserWithShopBalance])
 async def list_staff_endpoint(
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
@@ -242,7 +244,27 @@ async def list_staff_endpoint(
     require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
     scope = await staff_scope_filter(db, current_user)
     documents = await db.users.find(scope).to_list(length=None)
-    return [UserInDB(**document) for document in documents]
+    # Fetch all balances for the visible staff in one query.  The Staff page
+    # must not issue a separate balance request for every staff member.
+    phones = [document["phone"] for document in documents]
+    balances = await db.shopBalances.find(
+        {"phone": {"$in": phones}}, {"phone": 1, "currentBalance": 1}
+    ).to_list(length=None) if phones else []
+    balance_by_phone = {
+        balance["phone"]: (
+            balance.get("currentBalance").to_decimal()
+            if hasattr(balance.get("currentBalance"), "to_decimal")
+            else balance.get("currentBalance", 0)
+        )
+        for balance in balances
+    }
+    return [
+        StaffUserWithShopBalance(
+            **document,
+            availableShopBalance=balance_by_phone.get(document["phone"], 0),
+        )
+        for document in documents
+    ]
 
 
 @router.get("/staff/{phone}", response_model=UserInDB)
@@ -264,7 +286,8 @@ async def update_staff_endpoint(
 ):
     staff = await get_scoped_staff_user(db, current_user, phone)
     changes = payload.model_dump(exclude_unset=True)
-    if not changes:
+    owner_phone = changes.pop("ownerPhone", None)
+    if not changes and not owner_phone:
         return UserInDB(**staff)
 
     is_self = phone == current_user.phone
@@ -337,6 +360,12 @@ async def update_staff_endpoint(
             changes["adminId"] = None
         elif changes["role"] == CASHIER and current_user.role == ADMIN:
             changes["parentCutPercent"] = 100
+
+    if current_user.role == SYSTEM and owner_phone:
+        ownership_role = changes.get("role", staff.get("role"))
+        changes.update(
+            await inherited_owner_assignment(db, current_user, ownership_role, owner_phone)
+        )
 
     if "username" in changes and changes["username"] != staff["username"]:
         existing = await get_user_by_username(db.users, changes["username"])
@@ -488,6 +517,7 @@ async def list_shop_games_endpoint(
     endAt: Optional[datetime] = None,
     shopId: Optional[str] = None,
     branchId: Optional[str] = None,
+    gameStatus: Optional[str] = None,
     current_user: UserInDB = Depends(get_current_active_user),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
@@ -497,6 +527,10 @@ async def list_shop_games_endpoint(
     filters = {}
     if shopId: filters["shopId"] = shopId
     if branchId: filters["branchId"] = branchId
+    if gameStatus:
+        if gameStatus not in {"PENDING", "ACTIVE", "COMPLETE", "VOID"}:
+            raise HTTPException(status_code=422, detail="gameStatus must be PENDING, ACTIVE, COMPLETE, or VOID")
+        filters["status"] = gameStatus
     if startAt or endAt:
         filters["createdAt"] = {**({"$gte": startAt} if startAt else {}), **({"$lt": endAt} if endAt else {})}
     return await list_scoped_shop_games(db, current_user, filters)

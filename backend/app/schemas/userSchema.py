@@ -12,6 +12,7 @@ class UserSchema(BaseModel):
     shopId: Optional[str] = None
     branchId: Optional[str] = None
     agentId: Optional[str] = None
+    subagentId: Optional[str] = None
     agentPercent: float = 0.0
     parentPhone: Optional[str] = None
     parentCutPercent: float = 0.0
@@ -42,8 +43,12 @@ class UserUpdate(BaseModel):
     branchId: Optional[str] = None
     phone: Optional[str] = None
     agentId: Optional[str] = None
+    subagentId: Optional[str] = None
     agentPercent: Optional[float] = None
     parentPhone: Optional[str] = None
+    # Request-only direct owner.  The API derives and writes the full
+    # agent/subagent/admin chain, rather than trusting client supplied IDs.
+    ownerPhone: Optional[str] = None
     parentCutPercent: Optional[float] = None
     adminId: Optional[str] = None
     adminPercent: Optional[float] = None

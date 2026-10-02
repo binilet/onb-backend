@@ -16,6 +16,54 @@ CASHIER = "cashier"
 HIERARCHY_STAFF_ROLES = frozenset({SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER})
 
 
+async def inherited_owner_assignment(
+    db: AsyncIOMotorDatabase,
+    current_user: UserInDB,
+    child_role: str,
+    owner_phone: str | None = None,
+) -> dict[str, str | None]:
+    """Return a consistent direct-parent and inherited hierarchy chain.
+
+    ``parentPhone`` identifies who created/owns the account directly.  The
+    agent, subagent, and admin fields are denormalized ancestry fields used by
+    fast scoped reads.  They are always derived here, never accepted from a
+    staff-creation request.
+    """
+    allowed_owner_roles = {
+        AGENT: {SYSTEM},
+        SUBAGENT: {SYSTEM, AGENT},
+        ADMIN: {SYSTEM, AGENT, SUBAGENT},
+        CASHIER: {SYSTEM, AGENT, SUBAGENT, ADMIN},
+        "user": {SYSTEM, AGENT, SUBAGENT, ADMIN},
+    }
+    if current_user.role == SYSTEM:
+        # System is the implicit owner whenever no explicit owner is selected.
+        if not owner_phone or owner_phone == current_user.phone:
+            owner = current_user.model_dump()
+        else:
+            owner_query = {"phone": owner_phone}
+            if child_role != "user":
+                owner_query["forShop"] = True
+            owner = await db.users.find_one(owner_query)
+            if owner is None:
+                raise HTTPException(status_code=422, detail="Selected owner is not an active shop staff account")
+    else:
+        if owner_phone and owner_phone != current_user.phone:
+            raise HTTPException(status_code=403, detail="Staff can create accounts only under themselves")
+        owner = current_user.model_dump()
+
+    if owner.get("role") not in allowed_owner_roles.get(child_role, set()):
+        raise HTTPException(status_code=422, detail=f"A {child_role} must be assigned to an eligible direct owner")
+
+    owner_role = owner["role"]
+    return {
+        "parentPhone": owner["phone"],
+        "agentId": owner["phone"] if owner_role == AGENT else owner.get("agentId"),
+        "subagentId": owner["phone"] if owner_role == SUBAGENT else owner.get("subagentId"),
+        "adminId": owner["phone"] if owner_role == ADMIN else owner.get("adminId"),
+    }
+
+
 def validate_assigned_cut(current_user: UserInDB, role: str, cut_percent: float | None) -> None:
     """Validate the direct parent's cut assignment without relying on the UI."""
     if current_user.role == ADMIN and role == CASHIER:
@@ -101,13 +149,26 @@ async def staff_scope_filter(db: AsyncIOMotorDatabase, current_user: UserInDB) -
     """
     if current_user.role == SYSTEM:
         return {"forShop": True}
-    if current_user.role in {AGENT, SUBAGENT}:
-        phones = await descendant_staff_phones(db, current_user)
-        return {"phone": {"$in": phones}, "forShop": True}
-    if current_user.role == ADMIN and current_user.shopId:
-        return {"shopId": current_user.shopId, "forShop": True}
+
+    # Orphaned legacy staff can only be inspected and repaired by System.
+    # Any populated hierarchy field represents an assigned owner while older
+    # records are being migrated to the new complete ownership chain.
+    has_assigned_owner = {
+        "$or": [
+            {"parentPhone": {"$exists": True, "$nin": [None, ""]}},
+            {"agentId": {"$exists": True, "$nin": [None, ""]}},
+            {"subagentId": {"$exists": True, "$nin": [None, ""]}},
+            {"adminId": {"$exists": True, "$nin": [None, ""]}},
+        ]
+    }
+    if current_user.role == AGENT:
+        return {"$and": [{"agentId": current_user.phone, "forShop": True}, has_assigned_owner]}
+    if current_user.role == SUBAGENT:
+        return {"$and": [{"subagentId": current_user.phone, "forShop": True}, has_assigned_owner]}
+    if current_user.role == ADMIN:
+        return {"$and": [{"adminId": current_user.phone, "forShop": True}, has_assigned_owner]}
     if current_user.role == CASHIER:
-        return {"phone": current_user.phone, "forShop": True}
+        return {"$and": [{"phone": current_user.phone, "forShop": True}, has_assigned_owner]}
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No staff scope assigned")
 
 

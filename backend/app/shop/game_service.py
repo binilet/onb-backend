@@ -14,9 +14,12 @@ from shop.games import GameLifecycleRequest, GameParticipant, ShopGame, ShopGame
 def _game_from_document(document: dict) -> ShopGame:
     document = document.copy()
     document.setdefault("gameName", f"Game {str(document.get('game_id', ''))[:8].upper()}")
-    for field in ("betAmount", "totalWinning", "totalCutPercent", "totalCutAmount", "cutPercentApplied"):
-        if document.get(field) is not None and isinstance(document[field], Decimal128):
-            document[field] = document[field].to_decimal()
+    # MongoDB may contain financial fields introduced by an older deployment.
+    # Convert every top-level Decimal128 before Pydantic validates the response,
+    # rather than maintaining a fragile, incomplete field allow-list.
+    for field, value in document.items():
+        if isinstance(value, Decimal128):
+            document[field] = value.to_decimal()
     return ShopGame(**document)
 
 
@@ -71,7 +74,9 @@ async def create_shop_game(
     await _validate_game_location(db, current_user, payload.shopId, payload.branchId)
     await _validate_pattern(db, payload)
     game = ShopGame(**payload.model_dump(), createdByPhone=current_user.phone)
-    document = game.model_dump()
+    # These fields are calculated only for the games-list summary. Persisting
+    # their Decimal defaults would bypass the Decimal128 conversions below.
+    document = game.model_dump(exclude={"cartelaCount", "totalBets"})
     document["betAmount"] = Decimal128(game.betAmount)
     if game.totalWinning is not None:
         document["totalWinning"] = Decimal128(game.totalWinning)
@@ -125,7 +130,25 @@ async def list_scoped_shop_games(db: AsyncIOMotorDatabase, current_user: UserInD
     scope = await game_scope_filter(db, current_user)
     query = scope if not filters else {"$and": [scope, filters]} if scope else filters
     documents = await db.games.find(query).sort("createdAt", -1).to_list(length=None)
-    return [_game_from_document(document) for document in documents]
+    games = [_game_from_document(document) for document in documents]
+    game_ids = [game.game_id for game in games]
+    if not game_ids:
+        return games
+
+    cartela_counts = {
+        item["_id"]: item["count"]
+        async for item in db.gameParticipants.aggregate([
+            {"$match": {"gameId": {"$in": game_ids}}},
+            {"$group": {"_id": "$gameId", "count": {"$sum": 1}}},
+        ])
+    }
+    return [
+        game.model_copy(update={
+            "cartelaCount": cartela_counts.get(game.game_id, 0),
+            "totalBets": game.betAmount * cartela_counts.get(game.game_id, 0),
+        })
+        for game in games
+    ]
 
 
 async def get_scoped_shop_game(
@@ -249,7 +272,18 @@ async def apply_game_lifecycle_action(db: AsyncIOMotorDatabase, current_user: Us
     elif request.action == "VOID":
         if game.status == "COMPLETE":
             raise HTTPException(status_code=409, detail="Completed games cannot be voided")
+        if game.status == "VOID":
+            raise HTTPException(status_code=409, detail="Game is already voided")
         changes = {"status": "VOID", "isFrozen": False, "note": _system_note(game.note, f"Game voided by {current_user.phone}"), "updatedAt": datetime.now(timezone.utc)}
+        # Guard the update as well as the earlier read: a game that completes
+        # between those statements must never be changed to VOID.
+        result = await db.games.update_one(
+            {"game_id": game_id, "status": {"$nin": ["COMPLETE", "VOID"]}},
+            {"$set": changes},
+        )
+        if result.matched_count != 1:
+            raise HTTPException(status_code=409, detail="Game state changed; refresh and try again")
+        return await get_scoped_shop_game(db, current_user, game_id)
     elif request.action == "FREEZE":
         if game.status in {"COMPLETE", "VOID"}:
             raise HTTPException(status_code=409, detail="Completed or void games cannot be frozen")

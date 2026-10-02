@@ -19,6 +19,7 @@ from shop.authorization import (
     get_scoped_staff_user,
     require_roles,
     staff_scope_filter,
+    inherited_owner_assignment,
     validate_assigned_cut,
 )
 from shop.audit import write_action_log
@@ -68,10 +69,12 @@ async def update_user_details(
             "shopId",
             "branchId",
             "agentId",
+            "subagentId",
             "agentPercent",
             "adminId",
             "adminPercent",
             "parentPhone",
+            "ownerPhone",
             "parentCutPercent",
         }
         requested_fields = set(user_update.model_dump(exclude_unset=True))
@@ -79,6 +82,7 @@ async def update_user_details(
             raise HTTPException(status_code=403, detail="Hierarchy assignments must use the authorized shop endpoints")
     
     update_data = user_update.model_dump(exclude_unset=True)
+    owner_phone = update_data.pop("ownerPhone", None)
     requested_role = update_data.get("role")
     if requested_role == SYSTEM:
         raise HTTPException(status_code=403, detail="The system role cannot be assigned")
@@ -109,6 +113,11 @@ async def update_user_details(
             )
     elif current_user.role == SYSTEM and "parentCutPercent" in update_data:
         validate_assigned_cut(current_user, existing.get("role", "user"), update_data["parentCutPercent"])
+    if current_user.role == SYSTEM and owner_phone:
+        ownership_role = requested_role or existing.get("role", "user")
+        update_data.update(
+            await inherited_owner_assignment(db, current_user, ownership_role, owner_phone)
+        )
     user = await update_user(db.users, user_id=user_id, update_data=update_data)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")

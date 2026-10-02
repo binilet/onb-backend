@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     VERIFICATION_CODE_EXPIRE_MINUTES: int = 10
     MAX_VERIFICATION_ATTEMPTS: int = 5
     IS_PRODUCTION: bool = False
+    MEDIA_ROOT: str = "media"
+    MEDIA_BASE_URL: str = "http://localhost:8000/media"
     AUTO_DISTRIBUTE_INTERVAL_SECONDS: int = 3600
 
     class Config:

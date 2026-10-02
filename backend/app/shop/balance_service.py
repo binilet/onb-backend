@@ -105,8 +105,18 @@ async def _transfer_details(
         return current_user.phone, credited_points, request.amountPoints, None, cut_percent, reason
 
     if current_user.role == ADMIN:
-        direct_parent = recipient.get("parentPhone") or recipient.get("adminId")
-        if recipient.get("role") != CASHIER or direct_parent != current_user.phone:
+        # ``parentPhone`` is the current hierarchy field, while older cashier
+        # records can still carry their owning admin in ``adminId``.  Treat
+        # either explicit direct-admin link as valid; preferring one field with
+        # ``or`` made valid legacy cashiers fail when the other field was stale.
+        is_direct_cashier = (
+            recipient.get("role") == CASHIER
+            and (
+                recipient.get("parentPhone") == current_user.phone
+                or recipient.get("adminId") == current_user.phone
+            )
+        )
+        if not is_direct_cashier:
             raise HTTPException(status_code=403, detail="Admins may transfer to their direct cashiers only")
         if request.amountPoints is None or request.etbAmount is not None:
             raise HTTPException(status_code=422, detail="Admin transfers require amountPoints only")

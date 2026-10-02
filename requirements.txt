@@ -8,3 +8,5 @@ pymongo
 pydantic
 pydantic-settings
 python-multipart
+Pillow>=11.3,<13
+filelock>=3.19,<4

@@ -1,9 +1,17 @@
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
 from schemas.userSchema import UserSchema
+from models.user import UserInDB
+
+
+class StaffUserWithShopBalance(UserInDB):
+    """A staff-directory row with its current transferable shop balance."""
+
+    availableShopBalance: Decimal = Field(default=Decimal("0"))
 
 
 class StaffUserCreate(BaseModel):
@@ -14,6 +22,9 @@ class StaffUserCreate(BaseModel):
     shopId: Optional[str] = None
     branchId: Optional[str] = None
     parentCutPercent: Optional[float] = Field(default=None, gt=0)
+    # System users select a direct owner. Other staff are always owned by the
+    # authenticated creator and cannot override that relationship.
+    ownerPhone: Optional[str] = None
     # Shop-created staff start in a usable, verified shop staff state.
     isActive: bool = True
     verified: bool = True
@@ -40,6 +51,7 @@ class StaffUserUpdate(BaseModel):
     role: Optional[Literal["agent", "subagent", "admin", "cashier"]] = None
     parentCutPercent: Optional[float] = Field(default=None, gt=0)
     forShop: Optional[bool] = None
+    ownerPhone: Optional[str] = None
 
     @field_validator("password")
     @classmethod

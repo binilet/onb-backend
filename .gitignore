@@ -65,3 +65,4 @@ build/
 dist/
 *.egg-info/
 .eggs/
+media/

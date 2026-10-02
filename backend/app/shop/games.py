@@ -74,6 +74,8 @@ class ShopGame(BaseModel):
     frozenByRole: Optional[Literal["system", "agent", "subagent", "admin", "cashier"]] = None
     createdByPhone: str
     status: GameStatus = "PENDING"
+    cartelaCount: int = 0
+    totalBets: Decimal = Decimal("0")
     createdAt: datetime = Field(default_factory=utc_now)
     updatedAt: datetime = Field(default_factory=utc_now)
 
