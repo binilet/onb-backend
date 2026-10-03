@@ -69,6 +69,7 @@ class ShopGame(BaseModel):
     scheduledStartAt: Optional[datetime] = None
     note: Optional[str] = Field(default=None, max_length=1000)
     isFrozen: bool = False
+    runnerRecoveryRequired: bool = False
     isPurchaseLocked: bool = False
     frozenByPhone: Optional[str] = None
     frozenByRole: Optional[Literal["system", "agent", "subagent", "admin", "cashier"]] = None

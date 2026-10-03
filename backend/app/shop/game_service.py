@@ -1,14 +1,27 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from uuid import uuid4
+from contextlib import asynccontextmanager
 from bson import ObjectId
 from bson.decimal128 import Decimal128
 from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.errors import OperationFailure
 
 from models.user import UserInDB
 from shop.authorization import ADMIN, AGENT, CASHIER, SUBAGENT, SYSTEM, shop_scope_filter
 from shop.games import GameLifecycleRequest, GameParticipant, ShopGame, ShopGameCreate, ShopGameUpdate
+
+
+@asynccontextmanager
+async def _start_transaction(session):
+    try:
+        async with session.start_transaction():
+            yield
+    except OperationFailure as error:
+        if error.has_error_label("TransientTransactionError"):
+            raise HTTPException(status_code=409, detail="Game purchases or state changed; refresh and try starting again") from error
+        raise
 
 
 def _game_from_document(document: dict) -> ShopGame:
@@ -181,34 +194,40 @@ async def apply_game_lifecycle_action(db: AsyncIOMotorDatabase, current_user: Us
             return game
         if game.isFrozen:
             raise HTTPException(status_code=409, detail="Unfreeze the game before starting it")
-        participants = await db.gameParticipants.find(
-            {"gameId": game_id}, {"playerPhone": 1, "cartelaId": 1}
-        ).to_list(length=None)
-        cartela_count = len(participants)
-        player_count = len({participant.get("playerPhone") for participant in participants if participant.get("playerPhone")})
-        if cartela_count < 2 or player_count < 2:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "WAITING_FOR_PLAYERS",
-                    "message": "Wait for at least 2 players and 2 purchased cartelas before starting.",
-                    "cartelaCount": cartela_count,
-                    "playerCount": player_count,
-                },
-            )
-        gross_amount = game.betAmount * Decimal(cartela_count)
-        cut_amount = (gross_amount * game.totalCutPercent / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        # An entered totalWinning is a fixed, guaranteed pool. When it is
-        # omitted, lock the dynamic pool from actual cartela sales at start.
-        total_winning = game.totalWinning if game.totalWinning is not None else gross_amount - cut_amount
-        if cut_amount <= 0 or total_winning <= 0:
-            raise HTTPException(status_code=422, detail="The calculated cut and winning pool must both be positive")
-        starts_at = datetime.now(timezone.utc) + timedelta(seconds=20)
         now = datetime.now(timezone.utc)
         ledger_id = str(uuid4())
         idempotency_key = f"game-start-cut:{game_id}"
         async with await db.client.start_session() as session:
-            async with session.start_transaction():
+            async with _start_transaction(session):
+                # Purchases now write this same game document in their transaction.
+                # Lock BEFORE counting so the final card set and financial pool
+                # come from one snapshot, never from a pre-transaction read.
+                current = await db.games.find_one({"game_id": game_id}, session=session)
+                if current is None:
+                    raise HTTPException(status_code=404, detail="Game not found")
+                game = _game_from_document(current)
+                locked = await db.games.update_one(
+                    {"game_id": game_id, "status": "PENDING", "isPurchaseLocked": False, "isFrozen": False},
+                    {"$set": {"isPurchaseLocked": True, "updatedAt": now}}, session=session,
+                )
+                if locked.matched_count != 1:
+                    raise HTTPException(status_code=409, detail="Game start state changed; refresh and try again")
+                participants = await db.gameParticipants.find(
+                    {"gameId": game_id}, {"playerPhone": 1, "cartelaId": 1}, session=session,
+                ).to_list(length=None)
+                cartela_count = len(participants)
+                player_count = len({p.get("playerPhone") for p in participants if p.get("playerPhone")})
+                if cartela_count < 2 or player_count < 2:
+                    raise HTTPException(status_code=409, detail={
+                        "code": "WAITING_FOR_PLAYERS",
+                        "message": "Wait for at least 2 players and 2 purchased cartelas before starting.",
+                        "cartelaCount": cartela_count, "playerCount": player_count,
+                    })
+                gross_amount = game.betAmount * Decimal(cartela_count)
+                cut_amount = (gross_amount * game.totalCutPercent / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                total_winning = game.totalWinning if game.totalWinning is not None else gross_amount - cut_amount
+                if cut_amount <= 0 or total_winning <= 0:
+                    raise HTTPException(status_code=422, detail="The calculated cut and winning pool must both be positive")
                 existing_ledger = await db.shopBalanceLedgers.find_one({"idempotencyKey": idempotency_key}, session=session)
                 if existing_ledger is None:
                     balance = await db.shopBalances.find_one({"phone": game.createdByPhone}, session=session)
@@ -248,6 +267,7 @@ async def apply_game_lifecycle_action(db: AsyncIOMotorDatabase, current_user: Us
                     }, session=session)
                 else:
                     ledger_id = existing_ledger["ledger_id"]
+                starts_at = datetime.now(timezone.utc) + timedelta(seconds=20)
                 changes = {
                     "scheduledStartAt": starts_at,
                     "isPurchaseLocked": True,
@@ -262,7 +282,7 @@ async def apply_game_lifecycle_action(db: AsyncIOMotorDatabase, current_user: Us
                     "updatedAt": now,
                 }
                 result = await db.games.update_one(
-                    {"game_id": game_id, "status": "PENDING", "isPurchaseLocked": False},
+                    {"game_id": game_id, "status": "PENDING", "isPurchaseLocked": True},
                     {"$set": changes},
                     session=session,
                 )
@@ -293,6 +313,6 @@ async def apply_game_lifecycle_action(db: AsyncIOMotorDatabase, current_user: Us
             return game
         if current_user.role == CASHIER and game.frozenByRole in {ADMIN, SYSTEM}:
             raise HTTPException(status_code=403, detail="Cashiers cannot unfreeze an admin or system freeze")
-        changes = {"isFrozen": False, "frozenByPhone": None, "frozenByRole": None, "note": _system_note(game.note, f"Game unfrozen by {current_user.phone}"), "updatedAt": datetime.now(timezone.utc)}
+        changes = {"isFrozen": False, "runnerRecoveryRequired": False, "frozenByPhone": None, "frozenByRole": None, "note": _system_note(game.note, f"Game unfrozen by {current_user.phone}"), "updatedAt": datetime.now(timezone.utc)}
     await db.games.update_one({"game_id": game_id}, {"$set": changes})
     return await get_scoped_shop_game(db, current_user, game_id)
