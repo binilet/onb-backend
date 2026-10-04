@@ -69,7 +69,10 @@ async def list_player_room_deposits(
     else:
         raise HTTPException(status_code=403, detail="No deposit-review scope assigned")
 
-    query = {**scope, "status": status_value.upper()}
+    selected_status = status_value.upper()
+    # Failed automatic receipt checks still require a human review. Keep them
+    # in the normal pending queue instead of hiding them from branch staff.
+    query = {**scope, "status": {"$in": ["PENDING", "FAILED"]} if selected_status == "PENDING" else selected_status}
     if deposit_method:
         query["depositMethod"] = deposit_method.upper()
     if start_at or end_at:
@@ -92,14 +95,14 @@ async def decide_player_room_deposit(db: AsyncIOMotorDatabase, current_user: Use
     await _validate_room_scope(db, current_user, deposit["shopId"], deposit["branchId"])
     if current_user.role == CASHIER and deposit["branchId"] != current_user.branchId and deposit.get("recipientPhone") != current_user.phone:
         raise HTTPException(status_code=403, detail="Cashiers may review only their own branch deposits")
-    if deposit.get("status") != "PENDING":
+    if deposit.get("status") not in {"PENDING", "FAILED"}:
         raise HTTPException(status_code=409, detail="This deposit request has already been reviewed")
     now = datetime.now(timezone.utc)
     next_status = {"APPROVE": "APPROVED", "DECLINE": "DECLINED", "VOID": "VOIDED"}[decision.action]
     await ensure_player_room_wallet_indexes(db)
     async with await db.client.start_session() as session:
         async with session.start_transaction():
-            changed = await db.shopDeposits.update_one({"_id": object_id, "status": "PENDING"}, {"$set": {"status": next_status, "reviewedByPhone": current_user.phone, "reviewedAt": now, "reviewNote": decision.note}}, session=session)
+            changed = await db.shopDeposits.update_one({"_id": object_id, "status": {"$in": ["PENDING", "FAILED"]}}, {"$set": {"status": next_status, "reviewedByPhone": current_user.phone, "reviewedAt": now, "reviewNote": decision.note}}, session=session)
             if changed.modified_count != 1:
                 raise HTTPException(status_code=409, detail="Deposit request was already reviewed")
             if decision.action == "APPROVE":
