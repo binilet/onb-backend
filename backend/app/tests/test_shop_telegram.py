@@ -40,7 +40,7 @@ class ShopTelegramTests(unittest.TestCase):
         app.dependency_overrides[get_current_active_user] = lambda: self.user
         self.client = TestClient(app)
         self._bot = settings.SHOP_TELEGRAM_BOT_USERNAME
-        settings.SHOP_TELEGRAM_BOT_USERNAME = "@HagereAlertsBot"
+        settings.SHOP_TELEGRAM_BOT_USERNAME = "@HagereBingoBot"
         self.run_async(self.db.shops.insert_many([
             {"shop_id": "s1", "shopName": "Abebe <Shop>", "agentId": "0911000000", "representativePhone": "0911000000",
              "telegram": {"deposits": {"chatId": "-100", "threadId": 4, "status": "BROKEN", "lastError": "kicked"}}},
