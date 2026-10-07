@@ -58,6 +58,8 @@ class ShopStartTests(IsolatedAsyncioTestCase):
         self.assertTrue(result.isPurchaseLocked)
         self.assertEqual(result.totalWinning, Decimal("27"))
         self.assertEqual(result.totalCutAmount, Decimal("3"))
+        self.assertEqual(result.totalBets, Decimal("30"))
+        self.assertEqual(result.cartelaCount, 3)
         self.assertGreaterEqual((result.scheduledStartAt.replace(tzinfo=timezone.utc) - before).total_seconds(), 20)
         await self.start_game()
         balance = await self.db.shopBalances.find_one({"phone": "test-cashier"})

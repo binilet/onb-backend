@@ -67,9 +67,26 @@ from shop.player_room_wallet_service import (
 from shop.games import GameLifecycleRequest, GameParticipant, ShopGame, ShopGameCreate, ShopGameUpdate
 from shop.game_service import apply_game_lifecycle_action, create_shop_game, get_scoped_shop_game, list_scoped_game_participants, list_scoped_shop_games, update_shop_game
 from shop.audit import ShopActionLog, list_scoped_action_logs, write_action_log
+from shop.dashboard import ShopDashboard
+from shop.dashboard_service import get_shop_dashboard
 
 
 router = APIRouter(prefix="/api/shop", tags=["shop"])
+
+
+@router.get("/dashboard", response_model=ShopDashboard)
+async def get_shop_dashboard_endpoint(
+    startAt: datetime,
+    endAt: datetime,
+    shopId: Optional[str] = None,
+    branchId: Optional[str] = None,
+    current_user: UserInDB = Depends(get_current_active_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    require_roles(current_user, SYSTEM, AGENT, SUBAGENT, ADMIN, CASHIER)
+    if startAt >= endAt:
+        raise HTTPException(status_code=422, detail="endAt must be later than startAt")
+    return await get_shop_dashboard(db, current_user, startAt, endAt, shopId, branchId)
 
 
 @router.post("/shops", response_model=Shop, status_code=status.HTTP_201_CREATED)

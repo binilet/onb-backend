@@ -272,6 +272,8 @@ async def apply_game_lifecycle_action(db: AsyncIOMotorDatabase, current_user: Us
                     "scheduledStartAt": starts_at,
                     "isPurchaseLocked": True,
                     "totalCutAmount": Decimal128(cut_amount),
+                    "totalBets": Decimal128(gross_amount),
+                    "cartelaCount": cartela_count,
                     "totalWinning": Decimal128(total_winning),
                     "cutPercentApplied": Decimal128(game.totalCutPercent),
                     "cutDebitedAt": now,
