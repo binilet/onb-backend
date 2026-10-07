@@ -6,6 +6,7 @@ from shop.router import router as shop_router
 from routes.site_media import router as site_media_router, ensure_indexes as ensure_media_indexes, MediaUploadLimit
 from services.site_media import media_root, media_url_base
 from fastapi.staticfiles import StaticFiles
+from shop.telegram import router as shop_telegram_router
 from contextlib import asynccontextmanager
 from services.manual_pay import watch_deposit_inserts
 from core.winningDistribution import periodic_auto_distribute
@@ -66,6 +67,7 @@ app.include_router(autoGameRoute.router)
 app.include_router(shop_router)
 app.include_router(site_media_router)
 app.include_router(site_media_router, prefix="/api", include_in_schema=False)
+app.include_router(shop_telegram_router)
 
 
 @app.on_event("startup")
