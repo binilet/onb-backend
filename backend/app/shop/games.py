@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, model_validator
 GameStatus = Literal["PENDING", "ACTIVE", "COMPLETE", "VOID"]
 GameFinancialStatus = Literal["NOT_CHARGED", "CUT_DEBITED", "CUT_REFUNDED"]
 GameStartMode = Literal["TIMER", "MANUAL"]
+GamePrizeMode = Literal["SALES_BASED", "FIXED"]
 
 
 def utc_now() -> datetime:
@@ -49,6 +50,10 @@ class ShopGameUpdate(BaseModel):
     note: Optional[str] = Field(default=None, max_length=1000)
 
 
+class ShopGameDuplicate(ShopGameCreate):
+    idempotencyKey: str = Field(min_length=8, max_length=200)
+
+
 class ShopGame(BaseModel):
     game_id: str = Field(default_factory=lambda: str(uuid4()))
     shopId: str
@@ -58,6 +63,8 @@ class ShopGame(BaseModel):
     dynamicPattern: Optional[str] = None
     betAmount: Decimal
     totalWinning: Optional[Decimal] = None
+    prizeMode: GamePrizeMode = "SALES_BASED"
+    configuredTotalWinning: Optional[Decimal] = None
     totalCutPercent: Decimal = Field(default=Decimal("10"), ge=10)
     totalCutAmount: Optional[Decimal] = None
     cutPercentApplied: Optional[Decimal] = None
@@ -77,6 +84,8 @@ class ShopGame(BaseModel):
     status: GameStatus = "PENDING"
     cartelaCount: int = 0
     totalBets: Decimal = Decimal("0")
+    duplicatedFromGameId: Optional[str] = None
+    duplicateIdempotencyKey: Optional[str] = None
     createdAt: datetime = Field(default_factory=utc_now)
     updatedAt: datetime = Field(default_factory=utc_now)
 

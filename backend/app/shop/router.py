@@ -64,8 +64,8 @@ from shop.player_room_wallet_service import (
     list_scoped_player_room_wallet_ledgers,
     top_up_player_room_wallet,
 )
-from shop.games import GameLifecycleRequest, GameParticipant, ShopGame, ShopGameCreate, ShopGameUpdate
-from shop.game_service import apply_game_lifecycle_action, create_shop_game, get_scoped_shop_game, list_scoped_game_participants, list_scoped_shop_games, update_shop_game
+from shop.games import GameLifecycleRequest, GameParticipant, ShopGame, ShopGameCreate, ShopGameDuplicate, ShopGameUpdate
+from shop.game_service import apply_game_lifecycle_action, create_shop_game, duplicate_shop_game, get_scoped_shop_game, list_scoped_game_participants, list_scoped_shop_games, update_shop_game
 from shop.audit import ShopActionLog, list_scoped_action_logs, write_action_log
 from shop.dashboard import ShopDashboard
 from shop.dashboard_service import get_shop_dashboard
@@ -551,6 +551,22 @@ async def list_shop_games_endpoint(
     if startAt or endAt:
         filters["createdAt"] = {**({"$gte": startAt} if startAt else {}), **({"$lt": endAt} if endAt else {})}
     return await list_scoped_shop_games(db, current_user, filters)
+
+
+@router.post("/games/{game_id}/duplicate", response_model=ShopGame, status_code=status.HTTP_201_CREATED)
+async def duplicate_shop_game_endpoint(
+    game_id: str,
+    payload: ShopGameDuplicate,
+    current_user: UserInDB = Depends(get_current_active_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    game = await duplicate_shop_game(db, current_user, game_id, payload)
+    await write_action_log(
+        db, current_user, "CREATE", "GAME", game.game_id,
+        shop_id=game.shopId, branch_id=game.branchId,
+        detail={"operation": "DUPLICATE", "sourceGameId": game_id},
+    )
+    return game
 
 
 @router.get("/games/{game_id}/participants", response_model=list[GameParticipant])

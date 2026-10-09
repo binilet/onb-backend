@@ -6,11 +6,11 @@ from bson import ObjectId
 from bson.decimal128 import Decimal128
 from fastapi import HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from pymongo.errors import OperationFailure
+from pymongo.errors import DuplicateKeyError, OperationFailure
 
 from models.user import UserInDB
 from shop.authorization import ADMIN, AGENT, CASHIER, SUBAGENT, SYSTEM, shop_scope_filter
-from shop.games import GameLifecycleRequest, GameParticipant, ShopGame, ShopGameCreate, ShopGameUpdate
+from shop.games import GameLifecycleRequest, GameParticipant, ShopGame, ShopGameCreate, ShopGameDuplicate, ShopGameUpdate
 
 
 @asynccontextmanager
@@ -27,6 +27,21 @@ async def _start_transaction(session):
 def _game_from_document(document: dict) -> ShopGame:
     document = document.copy()
     document.setdefault("gameName", f"Game {str(document.get('game_id', ''))[:8].upper()}")
+    if not document.get("prizeMode"):
+        total_winning = document.get("totalWinning")
+        total_bets = document.get("totalBets")
+        total_cut = document.get("totalCutAmount")
+        if document.get("status") == "PENDING":
+            document["prizeMode"] = "FIXED" if total_winning is not None else "SALES_BASED"
+        elif total_winning is not None and total_bets is not None and total_cut is not None:
+            winning = total_winning.to_decimal() if isinstance(total_winning, Decimal128) else Decimal(str(total_winning))
+            bets = total_bets.to_decimal() if isinstance(total_bets, Decimal128) else Decimal(str(total_bets))
+            cut = total_cut.to_decimal() if isinstance(total_cut, Decimal128) else Decimal(str(total_cut))
+            document["prizeMode"] = "SALES_BASED" if winning == bets - cut else "FIXED"
+        else:
+            document["prizeMode"] = "FIXED" if total_winning is not None else "SALES_BASED"
+    if document["prizeMode"] == "FIXED" and document.get("configuredTotalWinning") is None:
+        document["configuredTotalWinning"] = document.get("totalWinning")
     # MongoDB may contain financial fields introduced by an older deployment.
     # Convert every top-level Decimal128 before Pydantic validates the response,
     # rather than maintaining a fragile, incomplete field allow-list.
@@ -86,15 +101,68 @@ async def create_shop_game(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only funded admins and cashiers may create games")
     await _validate_game_location(db, current_user, payload.shopId, payload.branchId)
     await _validate_pattern(db, payload)
-    game = ShopGame(**payload.model_dump(), createdByPhone=current_user.phone)
+    prize_mode = "FIXED" if payload.totalWinning is not None else "SALES_BASED"
+    game = ShopGame(
+        **payload.model_dump(),
+        prizeMode=prize_mode,
+        configuredTotalWinning=payload.totalWinning,
+        createdByPhone=current_user.phone,
+    )
     # These fields are calculated only for the games-list summary. Persisting
     # their Decimal defaults would bypass the Decimal128 conversions below.
     document = game.model_dump(exclude={"cartelaCount", "totalBets"})
     document["betAmount"] = Decimal128(game.betAmount)
     if game.totalWinning is not None:
         document["totalWinning"] = Decimal128(game.totalWinning)
+        document["configuredTotalWinning"] = Decimal128(game.totalWinning)
     document["totalCutPercent"] = Decimal128(game.totalCutPercent)
     await db.games.insert_one(document)
+    return game
+
+
+async def duplicate_shop_game(
+    db: AsyncIOMotorDatabase,
+    current_user: UserInDB,
+    source_game_id: str,
+    payload: ShopGameDuplicate,
+) -> ShopGame:
+    if current_user.role not in {ADMIN, CASHIER}:
+        raise HTTPException(status_code=403, detail="Only admins and cashiers may duplicate games")
+    source = await get_scoped_shop_game(db, current_user, source_game_id)
+    if source.status != "COMPLETE":
+        raise HTTPException(status_code=409, detail="Only completed games can be duplicated")
+
+    existing = await db.games.find_one({"duplicateIdempotencyKey": payload.idempotencyKey})
+    if existing is not None:
+        if existing.get("duplicatedFromGameId") != source_game_id or existing.get("createdByPhone") != current_user.phone:
+            raise HTTPException(status_code=409, detail="This duplicate request key has already been used")
+        return _game_from_document(existing)
+
+    create_payload = ShopGameCreate(**payload.model_dump(exclude={"idempotencyKey"}))
+    await _validate_game_location(db, current_user, create_payload.shopId, create_payload.branchId)
+    await _validate_pattern(db, create_payload)
+    prize_mode = "FIXED" if create_payload.totalWinning is not None else "SALES_BASED"
+    game = ShopGame(
+        **create_payload.model_dump(),
+        prizeMode=prize_mode,
+        configuredTotalWinning=create_payload.totalWinning,
+        createdByPhone=current_user.phone,
+        duplicatedFromGameId=source_game_id,
+        duplicateIdempotencyKey=payload.idempotencyKey,
+    )
+    document = game.model_dump(exclude={"cartelaCount", "totalBets"})
+    document["betAmount"] = Decimal128(game.betAmount)
+    document["totalCutPercent"] = Decimal128(game.totalCutPercent)
+    if game.totalWinning is not None:
+        document["totalWinning"] = Decimal128(game.totalWinning)
+        document["configuredTotalWinning"] = Decimal128(game.totalWinning)
+    try:
+        await db.games.insert_one(document)
+    except DuplicateKeyError:
+        existing = await db.games.find_one({"duplicateIdempotencyKey": payload.idempotencyKey})
+        if existing is not None and existing.get("duplicatedFromGameId") == source_game_id and existing.get("createdByPhone") == current_user.phone:
+            return _game_from_document(existing)
+        raise HTTPException(status_code=409, detail="This game duplication was already submitted")
     return game
 
 
@@ -134,6 +202,10 @@ async def update_shop_game(
     for field in ("betAmount", "totalWinning", "totalCutPercent"):
         if field in changes and changes[field] is not None:
             changes[field] = Decimal128(changes[field])
+    if "totalWinning" in changes:
+        configured = payload.totalWinning
+        changes["prizeMode"] = "FIXED" if configured is not None else "SALES_BASED"
+        changes["configuredTotalWinning"] = Decimal128(configured) if configured is not None else None
     changes["updatedAt"] = datetime.now(timezone.utc)
     await db.games.update_one({"game_id": game_id}, {"$set": changes})
     return await get_scoped_shop_game(db, current_user, game_id)
@@ -225,7 +297,10 @@ async def apply_game_lifecycle_action(db: AsyncIOMotorDatabase, current_user: Us
                     })
                 gross_amount = game.betAmount * Decimal(cartela_count)
                 cut_amount = (gross_amount * game.totalCutPercent / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                total_winning = game.totalWinning if game.totalWinning is not None else gross_amount - cut_amount
+                configured_winning = game.configuredTotalWinning
+                if game.prizeMode == "FIXED" and configured_winning is None:
+                    configured_winning = game.totalWinning
+                total_winning = configured_winning if game.prizeMode == "FIXED" else gross_amount - cut_amount
                 if cut_amount <= 0 or total_winning <= 0:
                     raise HTTPException(status_code=422, detail="The calculated cut and winning pool must both be positive")
                 existing_ledger = await db.shopBalanceLedgers.find_one({"idempotencyKey": idempotency_key}, session=session)

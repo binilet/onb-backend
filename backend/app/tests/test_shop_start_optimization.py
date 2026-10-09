@@ -12,7 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import OperationFailure
 
 from shop import game_service
-from shop.games import ShopGame, GameLifecycleRequest
+from shop.games import ShopGame, GameLifecycleRequest, ShopGameDuplicate
 
 
 class ShopStartTests(IsolatedAsyncioTestCase):
@@ -21,7 +21,7 @@ class ShopStartTests(IsolatedAsyncioTestCase):
         self.db_name = f"codex_shop_start_{uuid4().hex}"
         self.db = self.client[self.db_name]
         await self.client.admin.command("ping")
-        for name in ("games", "gameParticipants", "shopBalances", "shopBalanceLedgers"):
+        for name in ("games", "gameParticipants", "shopBalances", "shopBalanceLedgers", "shops", "shopBranches"):
             await self.db.create_collection(name)
         self.user = SimpleNamespace(role="system", phone="test-system")
         self.game = ShopGame(shopId="test-shop", branchId="test-branch", gameName="Test game",
@@ -32,6 +32,8 @@ class ShopStartTests(IsolatedAsyncioTestCase):
                 document[key] = Decimal128(value)
         await self.db.games.insert_one(document)
         await self.db.shopBalances.insert_one({"phone": "test-cashier", "currentBalance": Decimal128("100")})
+        await self.db.shops.insert_one({"shop_id": "test-shop"})
+        await self.db.shopBranches.insert_one({"branch_id": "test-branch", "shopId": "test-shop"})
 
     async def asyncTearDown(self):
         self.assertRegex(self.db_name, r"^codex_shop_start_[0-9a-f]{32}$")
@@ -85,7 +87,9 @@ class ShopStartTests(IsolatedAsyncioTestCase):
 
     async def test_fixed_pool_is_preserved(self):
         await self.participants(["one", "two"])
-        await self.db.games.update_one({}, {"$set": {"totalWinning": Decimal128("1000")}})
+        await self.db.games.update_one({}, {"$set": {
+            "totalWinning": Decimal128("1000"), "configuredTotalWinning": Decimal128("1000"), "prizeMode": "FIXED",
+        }})
         self.assertEqual((await self.start_game()).totalWinning, Decimal("1000"))
 
     async def test_transient_conflict_is_retryable_409(self):
@@ -93,4 +97,38 @@ class ShopStartTests(IsolatedAsyncioTestCase):
             with self.assertRaises(HTTPException) as raised:
                 async with game_service._start_transaction(session):
                     raise OperationFailure("Write conflict", 112, {"errorLabels": ["TransientTransactionError"]})
+        self.assertEqual(raised.exception.status_code, 409)
+
+    async def test_completed_game_can_be_duplicated_without_runtime_state(self):
+        await self.db.games.update_one({}, {"$set": {
+            "status": "COMPLETE", "totalBets": Decimal128("30"), "totalWinning": Decimal128("27"),
+            "totalCutAmount": Decimal128("3"), "callList": [1, 2, 3], "winners": [{"playerPhone": "one"}],
+        }})
+        admin = SimpleNamespace(role="admin", phone="test-admin", shopId="test-shop", branchId=None)
+        request = ShopGameDuplicate(
+            shopId="test-shop", branchId="test-branch", gameName="Next round",
+            betAmount=Decimal("10"), totalWinning=None, totalCutPercent=Decimal("10"),
+            dynamicPattern="any_line", startMode="MANUAL", idempotencyKey="duplicate-request-1",
+        )
+        duplicate = await game_service.duplicate_shop_game(self.db, admin, self.game.game_id, request)
+        self.assertNotEqual(duplicate.game_id, self.game.game_id)
+        self.assertEqual(duplicate.status, "PENDING")
+        self.assertEqual(duplicate.prizeMode, "SALES_BASED")
+        self.assertEqual(duplicate.duplicatedFromGameId, self.game.game_id)
+        saved = await self.db.games.find_one({"game_id": duplicate.game_id})
+        self.assertNotIn("callList", saved)
+        self.assertNotIn("winners", saved)
+        self.assertIsNone(saved.get("totalWinning"))
+        retried = await game_service.duplicate_shop_game(self.db, admin, self.game.game_id, request)
+        self.assertEqual(retried.game_id, duplicate.game_id)
+
+    async def test_pending_game_cannot_be_duplicated(self):
+        admin = SimpleNamespace(role="admin", phone="test-admin", shopId="test-shop", branchId=None)
+        request = ShopGameDuplicate(
+            shopId="test-shop", branchId="test-branch", gameName="Copy",
+            betAmount=Decimal("10"), totalCutPercent=Decimal("10"), dynamicPattern="any_line",
+            idempotencyKey="duplicate-request-2",
+        )
+        with self.assertRaises(HTTPException) as raised:
+            await game_service.duplicate_shop_game(self.db, admin, self.game.game_id, request)
         self.assertEqual(raised.exception.status_code, 409)
